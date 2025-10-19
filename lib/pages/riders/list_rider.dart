@@ -1,8 +1,15 @@
+import 'dart:io';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:deliverydomo/models/app_colors.dart';
+import 'package:deliverydomo/models/shipment_models.dart';
 import 'package:deliverydomo/pages/riders/widgets/appbar.dart';
-import 'package:deliverydomo/pages/sesstion.dart'; // ใช้ SessionStore.userId / phoneId
+import 'package:deliverydomo/pages/sesstion.dart';
+import 'package:deliverydomo/services/firebase_reueries_rider.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:image_picker/image_picker.dart';
 
 class ListRider extends StatefulWidget {
   const ListRider({Key? key}) : super(key: key);
@@ -12,156 +19,116 @@ class ListRider extends StatefulWidget {
 }
 
 class _ListRiderState extends State<ListRider> {
-  static const _orange = Color(0xFFFD8700);
-  static const _bg = Color(0xFFF8F6F2);
-
   String get _riderId =>
       (SessionStore.userId ?? SessionStore.phoneId ?? '').toString();
 
-  Map<String, dynamic> _asMap(dynamic v) {
-    if (v is Map<String, dynamic>) return v;
-    if (v is Map) return v.map((k, v) => MapEntry(k.toString(), v));
-    return <String, dynamic>{};
-  }
+  final _picker = ImagePicker();
+  final _repo = FirebaseRiderRepository();
 
-  // ======== PHOTO LOADER (NEW) ========
-  final Map<String, String> _photoCache = {}; // key = uid|phone
+  File? _pendingProofPreviewFile;
 
-  Future<String> _fetchUserPhotoByUid(String uid) async {
-    if (uid.isEmpty) return '';
-    final key = 'uid:$uid';
-    if (_photoCache.containsKey(key)) return _photoCache[key]!;
-    try {
-      final snap =
-          await FirebaseFirestore.instance.collection('users').doc(uid).get();
-      if (snap.exists) {
-        final m = snap.data() ?? {};
-        final url = (m['photoUrl'] ?? m['avatarUrl'] ?? m['avatar_url'] ?? '')
-            .toString();
-        _photoCache[key] = url;
-        return url;
-      }
-    } catch (_) {}
-    _photoCache[key] = '';
-    return '';
-  }
-
-  Future<String> _fetchUserPhotoByPhone(String phone) async {
-    if (phone.isEmpty) return '';
-    final key = 'phone:$phone';
-    if (_photoCache.containsKey(key)) return _photoCache[key]!;
-    try {
-      // map phone -> uid
-      final map = await FirebaseFirestore.instance
-          .collection('phone_to_uid')
-          .doc(phone)
-          .get();
-      final uid = (map.data()?['uid'] ?? '').toString();
-      if (uid.isNotEmpty) {
-        final url = await _fetchUserPhotoByUid(uid);
-        _photoCache[key] = url;
-        return url;
-      }
-      // legacy: users/{phone}
-      final legacy =
-          await FirebaseFirestore.instance.collection('users').doc(phone).get();
-      if (legacy.exists) {
-        final m = legacy.data() ?? {};
-        final url = (m['photoUrl'] ?? m['avatarUrl'] ?? m['avatar_url'] ?? '')
-            .toString();
-        _photoCache[key] = url;
-        return url;
-      }
-    } catch (_) {}
-    _photoCache[key] = '';
-    return '';
-  }
-
-  // โหลดข้อความที่อยู่จาก addressuser/{id} เมื่อ snapshot ไม่มี detail
-  Future<String> _loadAddressTextById(String id) async {
-    if (id.isEmpty) return '';
-    final snap = await FirebaseFirestore.instance
-        .collection('addressuser')
-        .doc(id)
-        .get();
-    if (!snap.exists) return '';
-    final m = snap.data() ?? {};
-    return (m['address_text'] ?? m['detail'] ?? '').toString();
-  }
-
-  // ---- stream ดูล็อกงานปัจจุบันของไรเดอร์
   Stream<DocumentSnapshot<Map<String, dynamic>>> _riderLockStream() {
     if (_riderId.isEmpty) {
-      return const Stream<DocumentSnapshot<Map<String, dynamic>>>.empty();
+      return Stream<DocumentSnapshot<Map<String, dynamic>>>.empty();
     }
-    return FirebaseFirestore.instance
-        .collection('riders')
-        .doc(_riderId)
-        .snapshots();
+    return _repo.watchRider(_riderId);
   }
 
-  // stream งานทั้งหมดของเรา (ไว้กรองต่อในฝั่งแอป)
   Stream<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _mineStream() {
-    final q = FirebaseFirestore.instance
+    return FirebaseFirestore.instance
         .collection('shipments')
         .where('rider_id', isEqualTo: _riderId)
-        .limit(80);
-    return q.snapshots().map((s) => s.docs);
+        .where('status', whereIn: [2, 3])
+        .snapshots()
+        .map((qs) => qs.docs);
   }
 
-  // โหลด 1 งานตาม id (เมื่อมี current_shipment_id)
-  Stream<DocumentSnapshot<Map<String, dynamic>>> _shipmentById(String id) {
-    return FirebaseFirestore.instance
-        .collection('shipments')
-        .doc(id)
-        .snapshots();
+  Stream<DocumentSnapshot<Map<String, dynamic>>> _shipmentById(String id) =>
+      _repo.watchShipment(id);
+
+  Future<String> _loadAddressTextById(String id) =>
+      _repo.loadAddressTextById(id);
+
+  Stream<String> _watchAvatarByUid(String uid) =>
+      _repo.watchUserAvatarByUid(uid);
+  Stream<String> _watchAvatarByPhone(String phone) =>
+      _repo.watchUserAvatarByPhone(phone);
+
+  Future<void> _pickProofPhoto({
+    required String shipmentId,
+    required int currentStatus,
+  }) async {
+    if (kIsWeb) {
+      Get.snackbar(
+        'ยังไม่รองรับเว็บ',
+        'อัปโหลดไฟล์จากเว็บยังไม่ได้ในเวอร์ชันนี้',
+        snackPosition: SnackPosition.BOTTOM,
+      );
+      return;
+    }
+
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined),
+              title: const Text('ถ่ายรูปด้วยกล้อง'),
+              onTap: () => Navigator.pop(context, ImageSource.camera),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('เลือกรูปจากเครื่อง'),
+              onTap: () => Navigator.pop(context, ImageSource.gallery),
+            ),
+            const SizedBox(height: 4),
+          ],
+        ),
+      ),
+    );
+
+    if (source == null) return;
+
+    final x = await _picker.pickImage(
+      source: source,
+      imageQuality: 85,
+      maxWidth: 1600,
+      maxHeight: 1600,
+    );
+    if (x == null) return;
+
+    final file = File(x.path);
+
+    setState(() => _pendingProofPreviewFile = file);
+
+    Get.snackbar(
+      'เตรียมรูปไว้แล้ว',
+      'รูปยังไม่ถูกส่งขึ้นระบบ จนกว่าจะกด "อัปเดตสถานะ"',
+      snackPosition: SnackPosition.BOTTOM,
+    );
   }
 
-  // อัปเดตสถานะด้วย transaction (กันชนกัน) + ตรวจล็อกให้ตรงกับงาน
-  Future<void> _updateStatus(String shipmentId, int from, int to) async {
-    final fs = FirebaseFirestore.instance;
-    final riderRef = fs.collection('riders').doc(_riderId);
-    final shipRef = fs.collection('shipments').doc(shipmentId);
-
+  Future<void> _updateStatusOnlyOrWithPending({
+    required String shipmentId,
+    required int fromStatus,
+    required int toStatus,
+  }) async {
     try {
-      await fs.runTransaction((tx) async {
-        final riderSnap = await tx.get(riderRef);
-        final riderData = riderSnap.data() as Map<String, dynamic>? ?? {};
-        final current = (riderData['current_shipment_id'] ?? '').toString();
+      await _repo.updateShipmentStatus(
+        riderId: _riderId,
+        shipmentId: shipmentId,
+        fromStatus: fromStatus,
+        toStatus: toStatus,
+        proofFile: _pendingProofPreviewFile,
+      );
 
-        // ต้องล็อกตรงกับงานที่กำลังอัปเดตเท่านั้น
-        if (current != shipmentId) {
-          throw Exception('งานนี้ไม่ใช่งานที่ถูกล็อกอยู่ (#$current)');
-        }
-
-        final snap = await tx.get(shipRef);
-        if (!snap.exists) throw Exception('เอกสารถูกลบแล้ว');
-
-        final m = snap.data() as Map<String, dynamic>;
-        final riderId = (m['rider_id'] ?? '').toString();
-        final s = m['status'];
-        final status = (s is int) ? s : int.tryParse('$s') ?? 0;
-
-        if (riderId != _riderId) {
-          throw Exception('งานนี้ไม่ใช่ของคุณ');
-        }
-        if (status != from) {
-          throw Exception('สถานะเปลี่ยนไปแล้ว');
-        }
-
-        tx.update(shipRef, {
-          'status': to,
-          'updated_at': FieldValue.serverTimestamp(),
-        });
-
-        // ถ้าปิดงาน (to >= 4) ให้ปลดล็อกไรเดอร์
-        if (to >= 4) {
-          tx.update(riderRef, {
-            'current_shipment_id': FieldValue.delete(),
-            'updated_at': FieldValue.serverTimestamp(),
-          });
-        }
-      });
+      setState(() => _pendingProofPreviewFile = null);
 
       Get.snackbar('สำเร็จ', 'อัปเดตสถานะเรียบร้อย',
           snackPosition: SnackPosition.BOTTOM);
@@ -173,12 +140,71 @@ class _ListRiderState extends State<ListRider> {
     }
   }
 
-  // ===== UI =====
+  VoidCallback _onUpdateStatus(String shipmentId, int statusVal) {
+    return () async {
+      if (statusVal == 2) {
+        await _updateStatusOnlyOrWithPending(
+            shipmentId: shipmentId, fromStatus: 2, toStatus: 3);
+      } else if (statusVal == 3) {
+        await _updateStatusOnlyOrWithPending(
+            shipmentId: shipmentId, fromStatus: 3, toStatus: 4);
+      } else {
+        Get.snackbar('แจ้งเตือน', 'งานนี้ปิดจ๊อบแล้ว',
+            snackPosition: SnackPosition.BOTTOM);
+      }
+    };
+  }
+
+  Widget _buildShipmentCard(ShipmentVM vm) {
+    return _ShipmentDetailCard(
+      brand: 'Delivery WarpSong',
+      itemName: vm.itemName,
+      itemDesc: vm.itemDesc,
+      photoUrl: vm.photoUrl,
+      senderName: vm.sender.name,
+      senderPhone: vm.sender.phone,
+      senderAvatar: _Avatar(
+        immediateUrl: vm.sender.immediateAvatar,
+        uid: vm.sender.uid,
+        phone: vm.sender.phone,
+        // เปลี่ยนเป็น watcher สองตัวนี้
+        watchByUid: _watchAvatarByUid,
+        watchByPhone: _watchAvatarByPhone,
+        radius: 24,
+      ),
+      senderAddressWidget: _AddressText(
+        immediateText: vm.sender.addressImmediate,
+        addressIdForFallback: vm.sender.addressIdFallback,
+        loadById: _loadAddressTextById,
+      ),
+      receiverName: vm.receiver.name,
+      receiverPhone: vm.receiver.phone,
+      receiverAvatar: _Avatar(
+        immediateUrl: vm.receiver.immediateAvatar,
+        uid: vm.receiver.uid,
+        phone: vm.receiver.phone,
+        watchByUid: _watchAvatarByUid,
+        watchByPhone: _watchAvatarByPhone,
+        radius: 24,
+      ),
+      receiverAddressWidget: _AddressText(
+        immediateText: vm.receiver.addressImmediate,
+        addressIdForFallback: vm.receiver.addressIdFallback,
+        loadById: _loadAddressTextById,
+      ),
+      status: vm.status,
+      pendingPreviewFile: _pendingProofPreviewFile,
+      onPickProofPhoto: () =>
+          _pickProofPhoto(shipmentId: vm.id, currentStatus: vm.status),
+      onUpdateStatus: _onUpdateStatus(vm.id, vm.status),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: _bg,
-      appBar:  customAppBar(),
+      backgroundColor: const Color(0xFFF8F7F5),
+      appBar: customAppBar(),
       body: (_riderId.isEmpty)
           ? const Center(child: Text('ยังไม่พบรหัสไรเดอร์ในเซสชัน'))
           : StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
@@ -189,7 +215,6 @@ class _ListRiderState extends State<ListRider> {
                     (riderData['current_shipment_id'] ?? '').toString();
                 final hasCurrent = currentId.isNotEmpty;
 
-                // ถ้ามี current -> แสดงเฉพาะ “งานเดียว” ตาม lock
                 if (hasCurrent) {
                   return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
                     stream: _shipmentById(currentId),
@@ -201,125 +226,21 @@ class _ListRiderState extends State<ListRider> {
                         return const Center(
                             child: Text('ไม่พบงานที่ถูกล็อกไว้'));
                       }
-                      final doc = shipSnap.data!;
-                      final m = doc.data() as Map<String, dynamic>? ?? {};
 
-                      final id = (m['id'] ?? doc.id).toString();
-                      final itemName = (m['item_name'] ?? '-').toString();
-                      final itemDesc = (m['item_description'] ?? '').toString();
-                      final photoUrl = (m['last_photo_url'] ?? '').toString();
-
-                      final s = m['status'];
-                      final statusVal =
-                          (s is int) ? s : int.tryParse('$s') ?? 0;
-
-                      final sender = _asMap(m['sender_snapshot']);
-                      final receiver = _asMap(m['receiver_snapshot']);
-                      final deliverySnap =
-                          _asMap(m['delivery_address_snapshot']);
-
-                      final sName = (sender['name'] ?? '').toString();
-                      final sPhone = (sender['phone'] ?? '').toString();
-                      // immediate avatar (if any) from snapshot
-                      final sImmediateAvatar = (sender['avatar_url'] ??
-                              sender['photoUrl'] ??
-                              sender['avatarUrl'] ??
-                              sender['photo_url'] ??
-                              '')
-                          .toString();
-                      final sPickup = _asMap(sender['pickup_address']);
-                      String sAddressImmediate = (sPickup['detail'] ??
-                              sPickup['address_text'] ??
-                              _asMap(sender['address'])['address_text'] ??
-                              '')
-                          .toString();
-                      final sPickupId = (sender['pickup_address_id'] ??
-                              m['pickup_address_id'] ??
-                              '')
-                          .toString();
-                      final sUid = (sender['user_id'] ?? '').toString();
-
-                      final rName = (receiver['name'] ?? '').toString();
-                      final rPhone = (receiver['phone'] ?? '').toString();
-                      final rImmediateAvatar = (receiver['avatar_url'] ??
-                              receiver['photoUrl'] ??
-                              receiver['avatarUrl'] ??
-                              receiver['photo_url'] ??
-                              '')
-                          .toString();
-                      String rAddressImmediate = (deliverySnap['detail'] ??
-                              deliverySnap['address_text'] ??
-                              _asMap(receiver['address'])['address_text'] ??
-                              '')
-                          .toString();
-                      final rAddrId = (receiver['address_id'] ??
-                              m['delivery_address_id'] ??
-                              '')
-                          .toString();
-                      final rUid = (receiver['user_id'] ?? '').toString();
+                      final vm = ShipmentVM.fromDoc(shipSnap.data!);
 
                       return ListView(
-                        padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
+                        padding: const EdgeInsets.fromLTRB(12, 16, 12, 24),
                         children: [
-                          _lockedBanner(currentId),
-                          _ShipmentDetailCard(
-                            brand: 'Delivery WarpSong',
-                            itemName: itemName,
-                            itemDesc: itemDesc,
-                            photoUrl: photoUrl,
-                            senderName: sName,
-                            senderPhone: sPhone,
-                            senderAvatar: _Avatar(
-                              immediateUrl: sImmediateAvatar,
-                              uid: sUid,
-                              phone: sPhone,
-                              loaderByUid: _fetchUserPhotoByUid,
-                              loaderByPhone: _fetchUserPhotoByPhone,
-                              radius: 20,
-                            ),
-                            senderAddressWidget: _AddressText(
-                              immediateText: sAddressImmediate,
-                              addressIdForFallback: sPickupId,
-                              loadById: _loadAddressTextById,
-                            ),
-                            receiverName: rName,
-                            receiverPhone: rPhone,
-                            receiverAvatar: _Avatar(
-                              immediateUrl: rImmediateAvatar,
-                              uid: rUid,
-                              phone: rPhone,
-                              loaderByUid: _fetchUserPhotoByUid,
-                              loaderByPhone: _fetchUserPhotoByPhone,
-                              radius: 20,
-                            ),
-                            receiverAddressWidget: _AddressText(
-                              immediateText: rAddressImmediate,
-                              addressIdForFallback: rAddrId,
-                              loadById: _loadAddressTextById,
-                            ),
-                            status: statusVal,
-                            onTakeProofPhoto: () {
-                              Get.snackbar('ถ่ายรูป', 'ฟีเจอร์กำลังพัฒนา',
-                                  snackPosition: SnackPosition.BOTTOM);
-                            },
-                            onStepAction: () async {
-                              if (statusVal == 2) {
-                                await _updateStatus(id, 2, 3);
-                              } else if (statusVal == 3) {
-                                await _updateStatus(id, 3, 4);
-                              } else if (statusVal >= 4) {
-                                Get.snackbar('แจ้งเตือน', 'งานนี้ปิดจ๊อบแล้ว',
-                                    snackPosition: SnackPosition.BOTTOM);
-                              }
-                            },
-                          ),
+                          _LockedBanner(currentId: currentId),
+                          const SizedBox(height: 12),
+                          _buildShipmentCard(vm),
                         ],
                       );
                     },
                   );
                 }
 
-                // ถ้าไม่มี current -> แสดงงานของเราเฉพาะที่ "กำลังทำ" (2/3)
                 return StreamBuilder<
                     List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
                   stream: _mineStream(),
@@ -334,22 +255,36 @@ class _ListRiderState extends State<ListRider> {
                       );
                     }
 
-                    final all = snap.data ?? [];
-                    // กรองเฉพาะสถานะ 2/3 (ที่ยังทำอยู่)
-                    final active = all.where((d) {
-                      final s = d.data()['status'];
-                      final st = (s is int) ? s : int.tryParse('$s') ?? 0;
-                      return st == 2 || st == 3;
-                    }).toList();
-
+                    final active = (snap.data ?? []);
                     if (active.isEmpty) {
-                      return const Center(child: Text('ยังไม่มีงานที่รับ'));
+                      return Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.inbox_outlined,
+                                size: 64, color: Colors.grey.shade300),
+                            const SizedBox(height: 16),
+                            const Text(
+                              'ไม่มีงาน',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.black54,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            const Text(
+                              'รอการมอบหมายงานใหม่',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.black38,
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
                     }
 
-                    // ถ้ามีมากกว่า 1 งาน แสดงแถบเตือน (ข้อมูลผิดปกติ)
-                    final hasAnomaly = active.length > 1;
-
-                    // sort: updated_at -> created_at
                     active.sort((a, b) {
                       int ts(
                           DocumentSnapshot<Map<String, dynamic>> d, String k) {
@@ -367,123 +302,12 @@ class _ListRiderState extends State<ListRider> {
                     });
 
                     return ListView.separated(
-                      padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
-                      itemCount: active.length + (hasAnomaly ? 1 : 0),
+                      padding: const EdgeInsets.fromLTRB(12, 16, 12, 24),
+                      itemCount: active.length,
                       separatorBuilder: (_, __) => const SizedBox(height: 12),
                       itemBuilder: (_, i) {
-                        if (hasAnomaly && i == 0) {
-                          return _warnBanner();
-                        }
-
-                        final doc = active[hasAnomaly ? i - 1 : i];
-                        final m = doc.data();
-
-                        final id = (m['id'] ?? doc.id).toString();
-                        final itemName = (m['item_name'] ?? '-').toString();
-                        final itemDesc =
-                            (m['item_description'] ?? '').toString();
-                        final photoUrl = (m['last_photo_url'] ?? '').toString();
-
-                        final stRaw = m['status'];
-                        final statusVal = (stRaw is int)
-                            ? stRaw
-                            : int.tryParse('$stRaw') ?? 0;
-
-                        final sender = _asMap(m['sender_snapshot']);
-                        final receiver = _asMap(m['receiver_snapshot']);
-                        final deliverySnap =
-                            _asMap(m['delivery_address_snapshot']);
-
-                        final sName = (sender['name'] ?? '').toString();
-                        final sPhone = (sender['phone'] ?? '').toString();
-                        final sImmediateAvatar = (sender['avatar_url'] ??
-                                sender['photoUrl'] ??
-                                sender['avatarUrl'] ??
-                                sender['photo_url'] ??
-                                '')
-                            .toString();
-                        final sPickup = _asMap(sender['pickup_address']);
-                        String sAddressImmediate = (sPickup['detail'] ??
-                                sPickup['address_text'] ??
-                                _asMap(sender['address'])['address_text'] ??
-                                '')
-                            .toString();
-                        final sPickupId = (sender['pickup_address_id'] ??
-                                m['pickup_address_id'] ??
-                                '')
-                            .toString();
-                        final sUid = (sender['user_id'] ?? '').toString();
-
-                        final rName = (receiver['name'] ?? '').toString();
-                        final rPhone = (receiver['phone'] ?? '').toString();
-                        final rImmediateAvatar = (receiver['avatar_url'] ??
-                                receiver['photoUrl'] ??
-                                receiver['avatarUrl'] ??
-                                receiver['photo_url'] ??
-                                '')
-                            .toString();
-                        String rAddressImmediate = (deliverySnap['detail'] ??
-                                deliverySnap['address_text'] ??
-                                _asMap(receiver['address'])['address_text'] ??
-                                '')
-                            .toString();
-                        final rAddrId = (receiver['address_id'] ??
-                                m['delivery_address_id'] ??
-                                '')
-                            .toString();
-                        final rUid = (receiver['user_id'] ?? '').toString();
-
-                        return _ShipmentDetailCard(
-                          brand: 'Delivery WarpSong',
-                          itemName: itemName,
-                          itemDesc: itemDesc,
-                          photoUrl: photoUrl,
-                          senderName: sName,
-                          senderPhone: sPhone,
-                          senderAvatar: _Avatar(
-                            immediateUrl: sImmediateAvatar,
-                            uid: sUid,
-                            phone: sPhone,
-                            loaderByUid: _fetchUserPhotoByUid,
-                            loaderByPhone: _fetchUserPhotoByPhone,
-                            radius: 20,
-                          ),
-                          senderAddressWidget: _AddressText(
-                            immediateText: sAddressImmediate,
-                            addressIdForFallback: sPickupId,
-                            loadById: _loadAddressTextById,
-                          ),
-                          receiverName: rName,
-                          receiverPhone: rPhone,
-                          receiverAvatar: _Avatar(
-                            immediateUrl: rImmediateAvatar,
-                            uid: rUid,
-                            phone: rPhone,
-                            loaderByUid: _fetchUserPhotoByUid,
-                            loaderByPhone: _fetchUserPhotoByPhone,
-                            radius: 20,
-                          ),
-                          receiverAddressWidget: _AddressText(
-                            immediateText: rAddressImmediate,
-                            addressIdForFallback: rAddrId,
-                            loadById: _loadAddressTextById,
-                          ),
-                          status: statusVal,
-                          onTakeProofPhoto: () {
-                            Get.snackbar('ถ่ายรูป', 'ฟีเจอร์กำลังพัฒนา',
-                                snackPosition: SnackPosition.BOTTOM);
-                          },
-                          onStepAction: () async {
-                            if (statusVal == 2) {
-                              await _updateStatus(id, 2, 3);
-                            } else if (statusVal == 3) {
-                              await _updateStatus(id, 3, 4);
-                            } else if (statusVal >= 4) {
-                              Get.snackbar('แจ้งเตือน', 'งานนี้ปิดจ๊อบแล้ว',
-                                  snackPosition: SnackPosition.BOTTOM);
-                            }
-                          },
-                        );
+                        final vm = ShipmentVM.fromDoc(active[i]);
+                        return _buildShipmentCard(vm);
                       },
                     );
                   },
@@ -492,38 +316,63 @@ class _ListRiderState extends State<ListRider> {
             ),
     );
   }
-
-  Widget _lockedBanner(String currentId) => Container(
-        margin: const EdgeInsets.only(bottom: 10),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        decoration: BoxDecoration(
-          color: const Color(0xFFFFF0D8),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: const Color(0xFFFFD79A)),
-        ),
-        child: Text(
-          'กำลังทำงานอยู่ (#$currentId) — ปิดงานก่อนจึงจะรับงานใหม่ได้',
-          style: const TextStyle(
-              color: Color(0xFF7A4D00), fontWeight: FontWeight.w700),
-        ),
-      );
-
-  Widget _warnBanner() => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        decoration: BoxDecoration(
-          color: const Color(0xFFFFF0F0),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: const Color(0xFFFFB4B4)),
-        ),
-        child: const Text(
-          'พบหลายงานที่สถานะกำลังทำอยู่ ทั้งที่ไม่มีล็อก — โปรดตรวจสอบข้อมูล หรือให้แอดมินคืนงาน/ปิดงานที่ไม่ถูกต้อง',
-          style:
-              TextStyle(color: Color(0xFF7A0000), fontWeight: FontWeight.w700),
-        ),
-      );
 }
 
-// ---------- Widgets ----------
+class _LockedBanner extends StatelessWidget {
+  const _LockedBanner({required this.currentId});
+
+  final String currentId;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFFBF5),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.orange, width: 2),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.orange.withOpacity(0.1),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          )
+        ],
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.lock_clock_outlined, color: AppColors.orange, size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'งานที่ล็อกไว้',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w900,
+                    color: AppColors.orange,
+                    fontSize: 13,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  '#$currentId',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: Colors.black54,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Icon(Icons.info_outline, color: Colors.black26, size: 18),
+        ],
+      ),
+    );
+  }
+}
 
 class _Avatar extends StatelessWidget {
   const _Avatar({
@@ -531,58 +380,57 @@ class _Avatar extends StatelessWidget {
     required this.immediateUrl,
     required this.uid,
     required this.phone,
-    required this.loaderByUid,
-    required this.loaderByPhone,
+    required this.watchByUid,
+    required this.watchByPhone,
     this.radius = 20,
   }) : super(key: key);
 
   final String immediateUrl;
   final String uid;
   final String phone;
-  final Future<String> Function(String uid) loaderByUid;
-  final Future<String> Function(String phone) loaderByPhone;
+  final Stream<String> Function(String uid) watchByUid;
+  final Stream<String> Function(String phone) watchByPhone;
   final double radius;
+
+  Stream<String> _chooseStream() {
+    if (uid.isNotEmpty) return watchByUid(uid);
+    if (phone.isNotEmpty) return watchByPhone(phone);
+    // ถ้าไม่มีทั้ง uid/phone ก็ส่งสตรีมว่าง
+    return const Stream<String>.empty();
+  }
 
   @override
   Widget build(BuildContext context) {
-    // ถ้ามี URL ใน snapshot ใช้ทันที
-    if (immediateUrl.isNotEmpty) {
-      return CircleAvatar(
-        radius: radius,
-        backgroundColor: const Color(0xFFF2F2F2),
-        backgroundImage: NetworkImage(immediateUrl),
-      );
-    }
+    // ถ้ามี URL จาก snapshot ติดมาก่อน ใช้เป็น initialData ให้ UI แสดงก่อน
+    final initial = immediateUrl;
 
-    // มิฉะนั้นพยายามโหลดจาก users/{uid} หรือ map phone->uid
-    Future<String> fut() async {
-      if (uid.isNotEmpty) {
-        final u = await loaderByUid(uid);
-        if (u.isNotEmpty) return u;
-      }
-      if (phone.isNotEmpty) {
-        final p = await loaderByPhone(phone);
-        return p;
-      }
-      return '';
-    }
-
-    return FutureBuilder<String>(
-      future: fut(),
+    return StreamBuilder<String>(
+      stream: _chooseStream(),
+      initialData: initial,
       builder: (context, snap) {
-        final url = (snap.data ?? '').toString();
-        if (url.isNotEmpty) {
-          return CircleAvatar(
+        final url = (snap.data ?? '').trim();
+        final hasUrl = url.isNotEmpty;
+
+        return Container(
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.1),
+                blurRadius: 8,
+                spreadRadius: 1,
+              )
+            ],
+          ),
+          child: CircleAvatar(
             radius: radius,
-            backgroundColor: const Color(0xFFF2F2F2),
-            backgroundImage: NetworkImage(url),
-          );
-        }
-        // loading/empty -> icon
-        return CircleAvatar(
-          radius: radius,
-          backgroundColor: const Color(0xFFF2F2F2),
-          child: const Icon(Icons.person_outline, color: Colors.black45),
+            backgroundColor: const Color(0xFFF5F5F5),
+            backgroundImage: hasUrl ? NetworkImage(url) : null,
+            child: hasUrl
+                ? null
+                : const Icon(Icons.person_outline,
+                    color: Colors.black45, size: 24),
+          ),
         );
       },
     );
@@ -604,23 +452,47 @@ class _AddressText extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (immediateText.trim().isNotEmpty) {
-      return Text(immediateText, maxLines: 2, overflow: TextOverflow.ellipsis);
+      return Text(
+        immediateText,
+        maxLines: 3,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(
+          color: Colors.black54,
+          fontSize: 12,
+          height: 1.4,
+        ),
+      );
     }
     if (addressIdForFallback.isEmpty) {
-      return const Text('-', maxLines: 2, overflow: TextOverflow.ellipsis);
+      return const Text('-',
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(color: Colors.black54, fontSize: 12));
     }
     return FutureBuilder<String>(
       future: loadById(addressIdForFallback),
       builder: (context, snap) {
         final txt = (snap.data ?? '').toString();
         if (snap.connectionState == ConnectionState.waiting) {
-          return const Text('กำลังโหลดที่อยู่...',
-              maxLines: 2, overflow: TextOverflow.ellipsis);
+          return const Text('กำลังโหลด...',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: Colors.black45, fontSize: 12));
         }
         if (txt.isEmpty) {
-          return const Text('-', maxLines: 2, overflow: TextOverflow.ellipsis);
+          return const Text('-',
+              maxLines: 4,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: Colors.black54, fontSize: 12));
         }
-        return Text(txt, maxLines: 2, overflow: TextOverflow.ellipsis);
+        return Text(txt,
+            maxLines: 3,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Colors.black54,
+              fontSize: 12,
+              height: 1.4,
+            ));
       },
     );
   }
@@ -635,39 +507,34 @@ class _ShipmentDetailCard extends StatelessWidget {
     required this.photoUrl,
     required this.senderName,
     required this.senderPhone,
-    required this.senderAvatar, // ✅ เปลี่ยนเป็น Widget
+    required this.senderAvatar,
     required this.senderAddressWidget,
     required this.receiverName,
     required this.receiverPhone,
-    required this.receiverAvatar, // ✅ เปลี่ยนเป็น Widget
+    required this.receiverAvatar,
     required this.receiverAddressWidget,
     required this.status,
-    required this.onTakeProofPhoto,
-    required this.onStepAction,
+    required this.pendingPreviewFile,
+    required this.onPickProofPhoto,
+    required this.onUpdateStatus,
   }) : super(key: key);
 
   final String brand;
   final String itemName;
   final String itemDesc;
   final String photoUrl;
-
   final String senderName;
   final String senderPhone;
-  final Widget senderAvatar; // ✅
+  final Widget senderAvatar;
   final Widget senderAddressWidget;
-
   final String receiverName;
   final String receiverPhone;
-  final Widget receiverAvatar; // ✅
+  final Widget receiverAvatar;
   final Widget receiverAddressWidget;
-
   final int status;
-  final VoidCallback onTakeProofPhoto;
-  final VoidCallback onStepAction;
-
-  static const _orange = Color(0xFFFD8700);
-  static const _orangeLight = Color(0xFFFFF0D8);
-  static const _green = Color(0xFF22C55E);
+  final File? pendingPreviewFile;
+  final VoidCallback onPickProofPhoto;
+  final VoidCallback onUpdateStatus;
 
   String get _statusText {
     switch (status) {
@@ -682,216 +549,59 @@ class _ShipmentDetailCard extends StatelessWidget {
     }
   }
 
-  String get _primaryBtnText {
-    switch (status) {
-      case 2:
-        return 'รับสินค้าแล้ว';
-      case 3:
-        return 'รับสินค้าปลายทางแล้ว';
-      default:
-        return 'ปิดงานแล้ว';
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    const radius = 16.0;
-
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
-        border: Border.all(color: _orange, width: 2),
-        borderRadius: BorderRadius.circular(radius),
-        boxShadow: const [
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
           BoxShadow(
-            blurRadius: 18,
-            offset: Offset(0, 10),
-            color: Color(0x14323232),
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
           ),
         ],
       ),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
+        padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Header
-            Row(
-              children: [
-                Container(
-                  height: 28,
-                  width: 28,
-                  decoration: BoxDecoration(
-                    color: _orangeLight,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: const Icon(Icons.local_shipping_outlined,
-                      color: _orange, size: 18),
-                ),
-                const SizedBox(width: 8),
-                Text(brand,
-                    style: const TextStyle(
-                        color: _orange, fontWeight: FontWeight.w800)),
-              ],
-            ),
-            const SizedBox(height: 12),
-
-            // รูปสินค้า + ชื่อ
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: photoUrl.isEmpty
-                      ? Container(
-                          height: 96,
-                          width: 140,
-                          color: const Color(0xFFEFEFEF),
-                          child: const Icon(Icons.image, color: Colors.black26),
-                        )
-                      : Image.network(
-                          photoUrl,
-                          height: 96,
-                          width: 140,
-                          fit: BoxFit.cover,
-                        ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: DefaultTextStyle(
-                    style: const TextStyle(height: 1.25, color: Colors.black87),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('สินค้า: $itemName',
-                            style: const TextStyle(
-                                fontWeight: FontWeight.w800, fontSize: 16)),
-                        if (itemDesc.isNotEmpty)
-                          Text('รายละเอียด: $itemDesc',
-                              maxLines: 3, overflow: TextOverflow.ellipsis),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
+            _HeaderSection(brand: brand),
+            const SizedBox(height: 16),
+            _ItemSection(
+              photoUrl: photoUrl,
+              itemName: itemName,
+              itemDesc: itemDesc,
             ),
             const SizedBox(height: 16),
-
-            const Text('Delivery WarpSong',
-                style: TextStyle(
-                    color: _orange, fontWeight: FontWeight.w900, fontSize: 18)),
-            const SizedBox(height: 10),
-
-            _PersonRow(
+            _PersonSection(
               title: 'ผู้ส่ง',
               name: senderName,
               phone: senderPhone,
-              avatar: senderAvatar, // ✅ ใช้ Avatar widget
+              avatar: senderAvatar,
               addressWidget: senderAddressWidget,
             ),
-            const Divider(height: 22, color: Color(0xFFFFE4BD), thickness: 1),
-
-            _PersonRow(
+            const Divider(height: 20, color: Color(0xFFEEEEEE), thickness: 1),
+            _PersonSection(
               title: 'ผู้รับ',
               name: receiverName,
               phone: receiverPhone,
-              avatar: receiverAvatar, // ✅ ใช้ Avatar widget
+              avatar: receiverAvatar,
               addressWidget: receiverAddressWidget,
             ),
-
             const SizedBox(height: 16),
-
-            // กล่องสถานะ + ปุ่มถ่ายรูป
-            Container(
-              width: double.infinity,
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFFAF3),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: _orangeLight, width: 1.5),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: const [
-                        Icon(Icons.camera_alt_outlined, color: _orange),
-                        SizedBox(width: 8),
-                        Text('ถ่ายรูปประกอบสถานะ',
-                            style: TextStyle(
-                                color: _orange, fontWeight: FontWeight.w800)),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(999),
-                            border: Border.all(color: _orangeLight, width: 1.2),
-                          ),
-                          child: Text(
-                            _statusText,
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                        ),
-                        const Spacer(),
-                        Text(
-                            'ขั้นตอน ${status == 2 ? "2/4" : status == 3 ? "3/4" : "4/4"}',
-                            style: const TextStyle(
-                                fontWeight: FontWeight.w700, color: _orange)),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    GestureDetector(
-                      onTap: onTakeProofPhoto,
-                      child: Container(
-                        height: 120,
-                        width: double.infinity,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: _orangeLight, width: 1.5),
-                        ),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: const [
-                            Icon(Icons.add_a_photo_outlined,
-                                size: 36, color: Colors.black54),
-                            SizedBox(height: 6),
-                            Text('แตะเพื่อถ่ายรูป',
-                                style: TextStyle(fontWeight: FontWeight.w700)),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+            _ProofSection(
+              status: status,
+              statusText: _statusText,
+              pendingPreviewFile: pendingPreviewFile,
+              onPickProofPhoto: onPickProofPhoto,
             ),
-
-            const SizedBox(height: 14),
-
-            SizedBox(
-              height: 48,
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: (status >= 4) ? null : onStepAction,
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: (status >= 4) ? Colors.grey : _green,
-                  foregroundColor: Colors.white,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                  textStyle: const TextStyle(
-                      fontWeight: FontWeight.w800, fontSize: 16),
-                ),
-                child: Text(_primaryBtnText),
-              ),
+            const SizedBox(height: 16),
+            _UpdateButton(
+              status: status,
+              onPressed: onUpdateStatus,
             ),
           ],
         ),
@@ -900,55 +610,332 @@ class _ShipmentDetailCard extends StatelessWidget {
   }
 }
 
-class _PersonRow extends StatelessWidget {
-  const _PersonRow({
-    Key? key,
+class _HeaderSection extends StatelessWidget {
+  const _HeaderSection({required this.brand});
+  final String brand;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(
+              width: 4,
+              height: 20,
+              decoration: BoxDecoration(
+                color: AppColors.orange,
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                brand,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w900,
+                  color: AppColors.orange,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'รายละเอียดรายการสินค้า',
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: Colors.black54,
+            letterSpacing: 0.3,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ItemSection extends StatelessWidget {
+  const _ItemSection({
+    required this.photoUrl,
+    required this.itemName,
+    required this.itemDesc,
+  });
+
+  final String photoUrl;
+  final String itemName;
+  final String itemDesc;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF9F3),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFFFE4C7), width: 1),
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: AspectRatio(
+              aspectRatio: 16 / 9,
+              child: photoUrl.isEmpty
+                  ? Container(
+                      color: Colors.grey.shade200,
+                      child:
+                          const Icon(Icons.image, color: Colors.grey, size: 48),
+                    )
+                  : Image.network(photoUrl, fit: BoxFit.cover),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            itemName,
+            style: const TextStyle(
+              fontWeight: FontWeight.w800,
+              fontSize: 14,
+              color: Colors.black87,
+            ),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+          if (itemDesc.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(
+              itemDesc,
+              style: const TextStyle(
+                fontSize: 12,
+                color: Colors.black54,
+                height: 1.4,
+              ),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _PersonSection extends StatelessWidget {
+  const _PersonSection({
     required this.title,
     required this.name,
     required this.phone,
-    required this.avatar, // ✅ new
+    required this.avatar,
     required this.addressWidget,
-  }) : super(key: key);
+  });
 
   final String title;
   final String name;
   final String phone;
-  final Widget avatar; // ✅
+  final Widget avatar;
   final Widget addressWidget;
-
-  static const _orange = Color(0xFFFD8700);
 
   @override
   Widget build(BuildContext context) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        avatar, // ✅ ใช้ Avatar widget ที่โหลดรูปอัตโนมัติ
+        avatar,
         const SizedBox(width: 12),
         Expanded(
-          child: DefaultTextStyle(
-            style: const TextStyle(color: Colors.black87, height: 1.24),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title,
-                    style: const TextStyle(
-                        color: _orange, fontWeight: FontWeight.w800)),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w800,
+                  fontSize: 13,
+                  color: AppColors.orange,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'คุณ $name',
+                style: const TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                  color: Colors.black87,
+                ),
+              ),
+              if (phone.isNotEmpty) ...[
                 const SizedBox(height: 2),
-                Text('คุณ $name',
-                    style: const TextStyle(fontWeight: FontWeight.w800)),
-                if (phone.isNotEmpty)
-                  Text('เบอร์: $phone',
-                      style: const TextStyle(color: Colors.black54)),
-                const SizedBox(height: 2),
-                const Text('ที่อยู่',
-                    style: TextStyle(fontWeight: FontWeight.w700)),
-                addressWidget,
+                Text(
+                  phone,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Colors.black54,
+                  ),
+                ),
               ],
-            ),
+              const SizedBox(height: 6),
+              addressWidget,
+            ],
           ),
         ),
       ],
+    );
+  }
+}
+
+class _ProofSection extends StatelessWidget {
+  const _ProofSection({
+    required this.status,
+    required this.statusText,
+    required this.pendingPreviewFile,
+    required this.onPickProofPhoto,
+  });
+
+  final int status;
+  final String statusText;
+  final File? pendingPreviewFile;
+  final VoidCallback onPickProofPhoto;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF9F3),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFFFE4C7), width: 1),
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.camera_alt_outlined,
+                  color: AppColors.orange, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'ถ่ายรูปประกอบสถานะ',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 13,
+                    color: AppColors.orange,
+                  ),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: AppColors.orange.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  '${status.clamp(1, 4)}/4',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 11,
+                    color: AppColors.orange,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            statusText,
+            style: const TextStyle(
+              fontSize: 12,
+              color: Colors.black54,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 12),
+          GestureDetector(
+            onTap: onPickProofPhoto,
+            child: Container(
+              height: 140,
+              width: double.infinity,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFFFE4C7), width: 1.5),
+              ),
+              child: pendingPreviewFile == null
+                  ? Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: const [
+                        Icon(Icons.add_a_photo_outlined,
+                            size: 40, color: AppColors.orange),
+                        SizedBox(height: 8),
+                        Text(
+                          'แตะเพื่อถ่าย/เลือกรูป',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13,
+                            color: Colors.black54,
+                          ),
+                        ),
+                      ],
+                    )
+                  : ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Image.file(
+                        pendingPreviewFile!,
+                        height: 140,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _UpdateButton extends StatelessWidget {
+  const _UpdateButton({
+    required this.status,
+    required this.onPressed,
+  });
+
+  final int status;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDisabled = status >= 4;
+    final buttonText = status == 2
+        ? 'รับสินค้าแล้ว (อัปเดตเป็น 3/4)'
+        : status == 3
+            ? 'ส่งสำเร็จ (อัปเดตเป็น 4/4)'
+            : 'ปิดงานแล้ว';
+
+    return SizedBox(
+      height: 50,
+      width: double.infinity,
+      child: ElevatedButton(
+        onPressed: isDisabled ? null : onPressed,
+        style: ElevatedButton.styleFrom(
+          backgroundColor: isDisabled ? Colors.grey.shade300 : AppColors.green,
+          foregroundColor: isDisabled ? Colors.grey.shade600 : Colors.white,
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+          textStyle: const TextStyle(
+            fontWeight: FontWeight.w800,
+            fontSize: 15,
+          ),
+        ),
+        child: Text(buttonText),
+      ),
     );
   }
 }

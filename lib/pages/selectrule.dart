@@ -3,7 +3,7 @@ import 'package:deliverydomo/pages/register_user.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
-/// หน้าเลือกประเภทสมาชิก
+
 class SelectMemberTypePage extends StatelessWidget {
   const SelectMemberTypePage({super.key});
 

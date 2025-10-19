@@ -1,9 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:crypto/crypto.dart';
-import 'package:firebase_storage/firebase_storage.dart';
+import 'package:deliverydomo/pages/login.dart';
+import 'package:deliverydomo/services/firebase_user.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:image_picker/image_picker.dart';
@@ -25,8 +25,9 @@ class _RegisterUserState extends State<RegisterUser> {
   bool _loading = false;
   File? _imageFile;
 
-  // ---------- Helpers ----------
-  /// ให้เหมือนฝั่ง Login: +66 / 66xxxxx -> 0xxxxx
+
+  final _api = FirebaseUserApi();
+
   String _normalizePhone(String s) {
     final only = s.replaceAll(RegExp(r'\D'), '');
     if (only.startsWith('66') && only.length >= 11) {
@@ -35,24 +36,10 @@ class _RegisterUserState extends State<RegisterUser> {
     return only;
   }
 
-  // ให้ตรงกับสูตรฝั่ง Login: sha256("$phone::$password")
   String _hashPasswordNoSalt(String password, String phone) {
     return sha256.convert(utf8.encode('$phone::$password')).toString();
   }
 
-  Future<String?> _uploadAvatar({
-    required String uidOrPhonePath, // ใช้อะไรก็ได้เป็น path segment
-    required File file,
-  }) async {
-    final path =
-        'users/$uidOrPhonePath/profile_${DateTime.now().millisecondsSinceEpoch}.jpg';
-    final ref = FirebaseStorage.instance.ref(path);
-    final snap = await ref.putFile(
-      file,
-      SettableMetadata(contentType: 'image/jpeg'),
-    );
-    return await snap.ref.getDownloadURL();
-  }
 
   void _toast(String msg, {bool success = false}) {
     Get.showSnackbar(
@@ -166,8 +153,7 @@ class _RegisterUserState extends State<RegisterUser> {
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
                   onPressed: () {
-                    Get.back(); // dialog
-                    Get.back(); // กลับไปหน้าเดิม (เช่น Login)
+                    Get.to(() => const LoginPage());
                   },
                   child:
                       const Text('ตกลง', style: TextStyle(color: Colors.white)),
@@ -192,54 +178,22 @@ class _RegisterUserState extends State<RegisterUser> {
     setState(() => _loading = true);
 
     try {
-      final fs = FirebaseFirestore.instance;
-
-      // 0) กันซ้ำด้วยเบอร์: query where phone == <phone>
-      final dup = await fs
-          .collection('users')
-          .where('phone', isEqualTo: phone)
-          .limit(1)
-          .get();
-      if (dup.docs.isNotEmpty) {
-        _toast('เบอร์นี้ถูกสมัครแล้ว');
-        return;
-      }
-
-      // 1) สร้าง uid ก่อน (เพื่อใช้เป็น path รูป และเก็บ users/{uid})
-      final docRef = fs.collection('users').doc(); // auto uid
-      final uid = docRef.id;
-
-      // 2) อัปโหลดรูป (ถ้ามี) — ผูกกับ uid จะสวยกว่า
-      String? photoUrl;
-      if (_imageFile != null) {
-        photoUrl = await _uploadAvatar(
-          uidOrPhonePath: uid,
-          file: _imageFile!,
-        );
-      }
-
-      // 3) hash password
       final passwordHash = _hashPasswordNoSalt(pass, phone);
-
-      // 4) เขียน users/{uid}
-      final now = FieldValue.serverTimestamp();
-      await docRef.set({
-        'id': uid,
-        'phone': phone,
-        'name': name,
-        'photoUrl': photoUrl,
-        'passwordHash': passwordHash,
-        'createdAt': now,
-        'updatedAt': now,
-      });
-
-      // 5) (แนะนำ) สร้าง mapping phone_to_uid/{phone}
-      await fs.collection('phone_to_uid').doc(phone).set({'uid': uid});
+      final res = await _api.createUser(
+        phone: phone,
+        name: name,
+        passwordHash: passwordHash,
+        avatarFile: _imageFile,
+      );
 
       _toast('สมัครสมาชิกสำเร็จ', success: true);
-      _showSuccessDialog(name: name, phone: phone, photoUrl: photoUrl);
-    } on FirebaseException catch (e) {
-      _toast('สมัครไม่สำเร็จ: [${e.code}] ${e.message}');
+      _showSuccessDialog(name: name, phone: phone, photoUrl: res.photoUrl);
+    } on FirebaseUserApiError catch (e) {
+      if (e.code == 'PHONE_TAKEN') {
+        _toast('เบอร์นี้ถูกสมัครแล้ว');
+      } else {
+        _toast('สมัครไม่สำเร็จ: ${e.code}');
+      }
     } catch (e) {
       _toast('สมัครไม่สำเร็จ: $e');
     } finally {

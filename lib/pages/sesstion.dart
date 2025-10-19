@@ -31,7 +31,7 @@ class AuthSession {
 class SessionStore {
   static const _boxName = 'app_session';
   static const _keyAuth = 'auth';
-  static const _keyProfile = 'profile'; // ใช้กรณีอยากเก็บข้อมูลโปรไฟล์เพิ่มเติม
+  static const _keyProfile = 'profile'; 
 
   static final GetStorage _box = GetStorage(_boxName);
 
@@ -62,7 +62,6 @@ class SessionStore {
 
   static Future<void> clearAuth() => _box.remove(_keyAuth);
 
-  // ---------- PROFILE (ออปชัน) ----------
   static Future<void> saveProfile(Map<String, dynamic> profile) async {
     await _box.write(_keyProfile, profile);
   }

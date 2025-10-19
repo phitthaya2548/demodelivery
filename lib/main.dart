@@ -17,7 +17,6 @@ Future<void> main() async {
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
   await SessionStore.init();
 
-  
   final GoogleMapsFlutterPlatform mapsImpl = GoogleMapsFlutterPlatform.instance;
   if (mapsImpl is GoogleMapsFlutterAndroid) {
     mapsImpl.useAndroidViewSurface = true;

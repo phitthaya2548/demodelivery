@@ -1,7 +1,11 @@
+// lib/pages/riders/home_rider.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:deliverydomo/pages/riders/detail_shipments.dart';
+import 'package:deliverydomo/pages/riders/map_rider.dart';
 import 'package:deliverydomo/pages/riders/widgets/appbar.dart';
+import 'package:deliverydomo/pages/riders/widgets/bottom.dart';
 import 'package:deliverydomo/pages/sesstion.dart';
+import 'package:deliverydomo/services/firebase_rider_showworl.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
@@ -16,6 +20,8 @@ class _HomeRiderState extends State<HomeRider> {
   static const _orange = Color(0xFFFD8700);
   static const _bg = Color(0xFFF8F6F2);
 
+  final _api = FirebaseRiderApi();
+
   String get _riderId =>
       (SessionStore.userId ?? SessionStore.phoneId ?? '').toString();
 
@@ -25,115 +31,40 @@ class _HomeRiderState extends State<HomeRider> {
     return <String, dynamic>{};
   }
 
-  Future<String> _loadAddressTextById(String id) async {
-    if (id.isEmpty) return '';
-    final snap = await FirebaseFirestore.instance
-        .collection('addressuser')
-        .doc(id)
-        .get();
-    if (!snap.exists) return '';
-    final m = snap.data() ?? {};
-    return (m['address_text'] ?? m['detail'] ?? '').toString();
-  }
-
-  Stream<DocumentSnapshot<Map<String, dynamic>>> _riderStream() {
-    final id = _riderId;
-    if (id.isEmpty) {
-      return const Stream<DocumentSnapshot<Map<String, dynamic>>>.empty();
-    }
-    return FirebaseFirestore.instance.collection('riders').doc(id).snapshots();
-  }
-
-  Stream<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _shipmentsStream() {
-    return FirebaseFirestore.instance
-        .collection('shipments')
-        .orderBy('created_at', descending: true)
-        .limit(80)
-        .snapshots()
-        .map((s) => s.docs);
-  }
-
   Future<void> _accept(String shipmentId) async {
-    final riderId = _riderId;
-    if (riderId.isEmpty) {
-      Get.snackbar('รับงานไม่ได้', 'ยังไม่พบรหัสไรเดอร์ในเซสชัน',
-          snackPosition: SnackPosition.BOTTOM);
-      return;
-    }
-
-    final fs = FirebaseFirestore.instance;
-    final riderRef = fs.collection('riders').doc(riderId);
-    final shipRef = fs.collection('shipments').doc(shipmentId);
-
-    try {
-      await fs.runTransaction((tx) async {
-        final riderSnap = await tx.get(riderRef);
-        final riderData = riderSnap.data() as Map<String, dynamic>? ?? {};
-        final current = (riderData['current_shipment_id'] ?? '').toString();
-        if (current.isNotEmpty)
-          throw Exception('คุณมีงานที่กำลังทำอยู่ (#$current)');
-
-        final shipSnap = await tx.get(shipRef);
-        if (!shipSnap.exists) throw Exception('งานถูกลบแล้ว');
-        final m = shipSnap.data() as Map<String, dynamic>;
-        final s = m['status'];
-        final status = (s is int) ? s : int.tryParse('$s') ?? 0;
-        if (status != 1) throw Exception('งานนี้ถูกคนอื่นรับไปแล้ว');
-
-        tx.set(
-          riderRef,
-          {
-            'current_shipment_id': shipmentId,
-            'updated_at': FieldValue.serverTimestamp(),
-          },
-          SetOptions(merge: true),
-        );
-        tx.update(shipRef, {
-          'status': 2,
-          'rider_id': riderId,
-          'updated_at': FieldValue.serverTimestamp(),
-        });
-      });
-
-      Get.snackbar('สำเร็จ', 'รับงานเรียบร้อย',
-          snackPosition: SnackPosition.BOTTOM);
-    } catch (e) {
-      Get.snackbar('รับงานไม่สำเร็จ', '$e',
-          snackPosition: SnackPosition.BOTTOM,
-          backgroundColor: Colors.red[400],
-          colorText: Colors.white);
-    }
+  final riderId = _riderId;
+  if (riderId.isEmpty) {
+    Get.snackbar('รับงานไม่ได้', 'ยังไม่พบรหัสไรเดอร์ในเซสชัน',
+        snackPosition: SnackPosition.BOTTOM);
+    return;
   }
+  try {
+    await _api.acceptShipment(riderId: riderId, shipmentId: shipmentId);
 
-  Future<void> completeOrCancel(String shipmentId,
+    
+    Get.offAll(() => const BottomRider(initialIndex: 2));
+
+    Get.snackbar('สำเร็จ', 'รับงานเรียบร้อย',
+        snackPosition: SnackPosition.BOTTOM);
+  } catch (e) {
+    Get.snackbar('รับงานไม่สำเร็จ', '$e',
+        snackPosition: SnackPosition.BOTTOM,
+        backgroundColor: Colors.red[400],
+        colorText: Colors.white);
+  }
+}
+
+
+  Future<void> _completeOrCancel(String shipmentId,
       {required bool complete}) async {
     final riderId = _riderId;
     if (riderId.isEmpty) return;
-
-    final fs = FirebaseFirestore.instance;
-    final riderRef = fs.collection('riders').doc(riderId);
-    final shipRef = fs.collection('shipments').doc(shipmentId);
-
     try {
-      await fs.runTransaction((tx) async {
-        final riderSnap = await tx.get(riderRef);
-        final riderData = riderSnap.data() as Map<String, dynamic>? ?? {};
-        final current = (riderData['current_shipment_id'] ?? '').toString();
-        if (current != shipmentId)
-          throw Exception('ไม่มีสิทธิ์หรือไม่มีงานนี้ในมือ');
-
-        tx.update(riderRef, {
-          'current_shipment_id': FieldValue.delete(),
-          'updated_at': FieldValue.serverTimestamp(),
-        });
-
-        tx.update(shipRef, {
-          'status': complete ? 3 : 1,
-          if (!complete) 'rider_id': FieldValue.delete(),
-          'updated_at': FieldValue.serverTimestamp(),
-        });
-      });
-
+      await _api.completeOrCancel(
+        riderId: riderId,
+        shipmentId: shipmentId,
+        complete: complete,
+      );
       Get.snackbar(
           'อัปเดตสำเร็จ', complete ? 'ปิดงานเรียบร้อย' : 'คืนงานเรียบร้อย',
           snackPosition: SnackPosition.BOTTOM);
@@ -151,7 +82,7 @@ class _HomeRiderState extends State<HomeRider> {
       backgroundColor: _bg,
       appBar: customAppBar(),
       body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-        stream: _riderStream(),
+        stream: _api.watchRider(_riderId),
         builder: (context, riderSnap) {
           final riderData =
               riderSnap.data?.data() as Map<String, dynamic>? ?? {};
@@ -168,7 +99,7 @@ class _HomeRiderState extends State<HomeRider> {
                       )
                     : StreamBuilder<
                         List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
-                        stream: _shipmentsStream(),
+                        stream: _api.watchOpenShipments(limit: 80),
                         builder: (context, snap) {
                           if (snap.connectionState == ConnectionState.waiting) {
                             return const Center(
@@ -184,13 +115,20 @@ class _HomeRiderState extends State<HomeRider> {
                             );
                           }
 
-                          final docs = (snap.data ?? []).where((d) {
-                            final m = d.data();
-                            final s = m['status'];
-                            final status =
-                                (s is int) ? s : int.tryParse('$s') ?? 0;
-                            return status == 1; // งานว่างเท่านั้น
-                          }).toList();
+                          final docs = [...(snap.data ?? [])]..sort((a, b) {
+                              int ts(DocumentSnapshot<Map<String, dynamic>> d,
+                                  String k) {
+                                final v = d.data()?[k];
+                                if (v is Timestamp) {
+                                  return v.millisecondsSinceEpoch;
+                                }
+                                return 0;
+                              }
+
+                              final bc = ts(b, 'created_at');
+                              final ac = ts(a, 'created_at');
+                              return bc.compareTo(ac);
+                            });
 
                           if (docs.isEmpty) {
                             return const Center(
@@ -204,60 +142,43 @@ class _HomeRiderState extends State<HomeRider> {
                                 const SizedBox(height: 12),
                             itemBuilder: (_, i) {
                               final Map<String, dynamic> m = docs[i].data();
-
                               final id = (m['id'] ?? docs[i].id).toString();
+
+                              // -------- keys ที่ตรงกับ payload ล่าสุด --------
                               final itemName =
-                                  (m['item_name'] ?? m['itemName'] ?? '-')
-                                      .toString();
-                              final itemDesc = (m['item_description'] ??
-                                      m['itemDescription'] ??
-                                      '')
-                                  .toString();
-                              final photoUrl =
-                                  (m['last_photo_url'] ?? m['photo_url'] ?? '')
-                                      .toString();
+                                  (m['item_name'] ?? '-').toString();
+                              final itemDesc = m['item_description'].toString();
 
-                              final sender =
-                                  _asMap(m['sender_snapshot'] ?? m['sender']);
-                              final receiver = _asMap(
-                                  m['receiver_snapshot'] ?? m['receiver']);
+                              final photoUrl = m['last_photo_url'].toString();
+
+                              // snapshots
+                              final sender = m['sender_snapshot'];
+                              final receiver = m['receiver_snapshot'];
+
+                              // CHANGED: delivery address ใช้ delivery_address_snapshot (มี detail_normalized)
                               final deliverySnap =
-                                  _asMap(m['delivery_address_snapshot'] ?? {});
+                                  m['delivery_address_snapshot'];
 
+                              // sender
                               final sName = (sender['name'] ?? '').toString();
-                              final sPhone = (sender['phone'] ??
-                                      sender['phoneNumber'] ??
-                                      '')
-                                  .toString();
-                              final sPickup = _asMap(sender['pickup_address']);
-                              final String sAddressImmediate =
-                                  (sPickup['detail'] ??
-                                          sPickup['address_text'] ??
-                                          _asMap(sender['address'])[
-                                              'address_text'] ??
-                                          '')
-                                      .toString();
-                              final sPickupId = (sender['pickup_address_id'] ??
-                                      m['pickup_address_id'] ??
-                                      '')
-                                  .toString();
+                              final sPhone = sender['phone'].toString();
 
+                              final sPickup = sender['pickup_address'];
+                              final String sAddressImmediate =
+                                  sPickup['detail_normalized'].toString();
+
+                              final sPickupId =
+                                  sender['pickup_address_id'].toString();
+
+                              // receiver
                               final rName = (receiver['name'] ?? '').toString();
-                              final rPhone = (receiver['phone'] ??
-                                      receiver['phoneNumber'] ??
-                                      '')
-                                  .toString();
+                              final rPhone = receiver['phone'].toString();
+
                               final String rAddressImmediate =
-                                  (deliverySnap['detail'] ??
-                                          deliverySnap['address_text'] ??
-                                          _asMap(receiver['address'])[
-                                              'address_text'] ??
-                                          '')
-                                      .toString();
-                              final rAddrId = (receiver['address_id'] ??
-                                      m['delivery_address_id'] ??
-                                      '')
-                                  .toString();
+                                  deliverySnap['detail_normalized'].toString();
+
+                              // CHANGED: ใช้ receiver_snapshot.address_id ก่อน แล้วค่อย delivery_address_id บน shipment
+                              final rAddrId = receiver['address_id'].toString();
 
                               return _JobCard(
                                 brand: 'Delivery WarpSong',
@@ -269,19 +190,20 @@ class _HomeRiderState extends State<HomeRider> {
                                 senderAddressWidget: _AddressText(
                                   immediateText: sAddressImmediate,
                                   addressIdForFallback: sPickupId,
-                                  loadById: _loadAddressTextById,
+                                  loadById: _api.addressTextById,
                                 ),
                                 receiverName: rName,
                                 receiverPhone: rPhone,
                                 receiverAddressWidget: _AddressText(
                                   immediateText: rAddressImmediate,
                                   addressIdForFallback: rAddrId,
-                                  loadById: _loadAddressTextById,
+                                  loadById: _api.addressTextById,
                                 ),
+                                // ตรงนี้ไม่ต้อง disable เพราะทั้งหน้า list จะถูกซ่อนไปตอนมี current อยู่แล้ว
                                 canAccept: true,
                                 onAccept: () => _accept(id),
 
-                                // 👉 นำทางทำที่นี่ (parent) เพราะมี id/m อยู่
+                                // เปิดหน้า details พร้อม id + snapshot
                                 onDetail: () {
                                   Get.to(
                                     () => const DetailShipments(),
@@ -357,7 +279,7 @@ class _JobCard extends StatelessWidget {
     required this.receiverPhone,
     required this.receiverAddressWidget,
     required this.onAccept,
-    required this.onDetail, // <- รับเป็น callback
+    required this.onDetail,
     required this.canAccept,
     this.acceptDisabledReason,
   });
@@ -376,7 +298,7 @@ class _JobCard extends StatelessWidget {
   final Widget receiverAddressWidget;
 
   final VoidCallback onAccept;
-  final VoidCallback onDetail; // <- แค่เรียก ไม่ต้องรู้จัก id/m
+  final VoidCallback onDetail;
 
   final bool canAccept;
   final String? acceptDisabledReason;
@@ -545,8 +467,7 @@ class _JobCard extends StatelessWidget {
                   child: SizedBox(
                     height: 44,
                     child: OutlinedButton(
-                      onPressed:
-                          onDetail, // <- แค่เรียก callback ที่ parent ส่งมา
+                      onPressed: onDetail,
                       style: OutlinedButton.styleFrom(
                         foregroundColor: _orange,
                         side: const BorderSide(color: _orange, width: 2),

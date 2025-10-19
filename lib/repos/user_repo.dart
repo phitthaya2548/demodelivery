@@ -1,27 +1,30 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:deliverydomo/models/user_profile.dart';
+// class UserProfile {
+//   final String id; // ใช้ phone เป็น docId
+//   final String phone;
+//   final String name;
+//   final String? photoUrl;
+//   final String passwordHash; // เก็บเฉพาะแฮช
+//   const UserProfile({
+//     required this.id,
+//     required this.phone,
+//     required this.name,
+//     required this.passwordHash,
+//     this.photoUrl,
+//   });
 
-class UserRepo {
-  final _col = FirebaseFirestore.instance.collection('users');
+//   factory UserProfile.fromJson(String id, Map<String, dynamic> m) =>
+//       UserProfile(
+//         id: id,
+//         phone: m['phone'] ?? '',
+//         name: m['name'] ?? '',
+//         photoUrl: m['photoUrl'],
+//         passwordHash: m['password_hash'] ?? '',
+//       );
 
-  Future<bool> exists(String phoneDocId) async =>
-      (await _col.doc(phoneDocId).get()).exists;
-
-  Future<void> create(UserProfile u) async => _col.doc(u.id).set({
-        ...u.toJson(),
-        'created_at': FieldValue.serverTimestamp(),
-        'updated_at': FieldValue.serverTimestamp(),
-      });
-
-  Future<void> updatePhoto(String phoneDocId, String url) async =>
-      _col.doc(phoneDocId).update({
-        'photoUrl': url,
-        'updated_at': FieldValue.serverTimestamp(),
-      });
-
-  Future<UserProfile?> getByPhone(String phoneDocId) async {
-    final d = await _col.doc(phoneDocId).get();
-    if (!d.exists) return null;
-    return UserProfile.fromJson(d.id, d.data()!);
-  }
-}
+//   Map<String, dynamic> toJson() => {
+//         'phone': phone,
+//         'name': name,
+//         'photoUrl': photoUrl,
+//         'password_hash': passwordHash,
+//       }..removeWhere((k, v) => v == null);
+// }

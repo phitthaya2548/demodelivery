@@ -1,6 +1,6 @@
-// lib/pages/riders/detail_shipments.dart
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:deliverydomo/pages/sesstion.dart';
+import 'package:deliverydomo/services/firebase_rider_showworl.dart';
+import 'package:deliverydomo/services/firebase_shipment_detail_rider.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
@@ -11,76 +11,35 @@ class DetailShipments extends StatefulWidget {
   State<DetailShipments> createState() => _DetailShipmentsState();
 }
 
-class _DetailShipmentsState extends State<DetailShipments> {
+class _DetailShipmentsState extends State<DetailShipments>
+    with TickerProviderStateMixin {
   static const _orange = Color(0xFFFD8700);
-  static const _bg = Color(0xFFF8F6F2);
+  static const _green = Color(0xFF16A34A);
+  static const _bg = Color(0xFFF8F7F5);
+
+  final _shipmentApi = ShipmentDetailApi();
+  final _riderApi = FirebaseRiderApi();
+
+  late AnimationController _scaleController;
 
   String get _riderId =>
       (SessionStore.userId ?? SessionStore.phoneId ?? '').toString();
 
-  // ===== Utils =====
-  Map<String, dynamic> _asMap(dynamic v) {
-    if (v is Map<String, dynamic>) return v;
-    if (v is Map) return v.map((k, v) => MapEntry(k.toString(), v));
-    return <String, dynamic>{};
+  @override
+  void initState() {
+    super.initState();
+    _scaleController = AnimationController(
+      duration: const Duration(milliseconds: 600),
+      vsync: this,
+    )..forward();
   }
 
-  Future<String> _loadAddressTextById(String id) async {
-    if (id.isEmpty) return '';
-    final snap = await FirebaseFirestore.instance
-        .collection('addressuser')
-        .doc(id)
-        .get();
-    if (!snap.exists) return '';
-    final m = (snap.data() ?? {}) as Map<String, dynamic>;
-    return (m['address_text'] ?? m['detail'] ?? '').toString();
+  @override
+  void dispose() {
+    _scaleController.dispose();
+    super.dispose();
   }
 
-  // ดึง URL รูปจาก map แบบ recursive: หาคีย์ที่มีคำว่า photo/avatar/image/picture/pic/url
-  String _pickPhotoUrl(Map<String, dynamic> m) {
-    String? found;
-
-    bool looksLikeUrl(dynamic v) {
-      if (v is! String) return false;
-      final s = v.trim();
-      return s.startsWith('https://') || s.startsWith('http://');
-    }
-
-    void walk(dynamic node) {
-      if (found != null) return;
-      if (node is Map) {
-        for (final entry in node.entries) {
-          final k = entry.key.toString().toLowerCase();
-          final v = entry.value;
-
-          if (looksLikeUrl(v)) {
-            if (k.contains('photo') ||
-                k.contains('avatar') ||
-                k.contains('image') ||
-                k.contains('picture') ||
-                k.contains('pic') ||
-                k == 'url' ||
-                k.contains('profile')) {
-              found = v.toString().trim();
-              return;
-            }
-          }
-
-          if (v is Map || v is List) walk(v);
-        }
-      } else if (node is List) {
-        for (final e in node) {
-          if (found != null) return;
-          walk(e);
-        }
-      }
-    }
-
-    walk(m);
-    return found ?? '';
-  }
-
-  // สร้างตัวอักษรย่อจากชื่อ (รองรับไทย/อังกฤษ) ถ้าว่าง ใช้ "คุณ"
   String _initials(String name) {
     var n = name.trim();
     if (n.isEmpty) n = 'คุณ';
@@ -91,7 +50,6 @@ class _DetailShipmentsState extends State<DetailShipments> {
         parts.last.characters.take(1).toString());
   }
 
-  // ===== Transactions =====
   Future<void> _accept(String shipmentId) async {
     final riderId = _riderId;
     if (riderId.isEmpty) {
@@ -99,47 +57,12 @@ class _DetailShipmentsState extends State<DetailShipments> {
           snackPosition: SnackPosition.BOTTOM);
       return;
     }
-
-    final fs = FirebaseFirestore.instance;
-    final riderRef = fs.collection('riders').doc(riderId);
-    final shipRef = fs.collection('shipments').doc(shipmentId);
-
     try {
-      await fs.runTransaction((tx) async {
-        final riderSnap = await tx.get(riderRef);
-        final riderData = riderSnap.data() as Map<String, dynamic>? ?? {};
-        final current = (riderData['current_shipment_id'] ?? '').toString();
-        if (current.isNotEmpty) {
-          throw Exception('คุณมีงานที่กำลังทำอยู่ (#$current)');
-        }
-
-        final shipSnap = await tx.get(shipRef);
-        if (!shipSnap.exists) {
-          throw Exception('งานถูกลบแล้ว');
-        }
-        final m = shipSnap.data() as Map<String, dynamic>;
-        final s = m['status'];
-        final status = (s is int) ? s : int.tryParse('$s') ?? 0;
-        if (status != 1) {
-          throw Exception('งานนี้ถูกคนอื่นรับไปแล้ว');
-        }
-
-        tx.set(
-          riderRef,
-          {
-            'current_shipment_id': shipmentId,
-            'updated_at': FieldValue.serverTimestamp(),
-          },
-          SetOptions(merge: true),
-        );
-        tx.update(shipRef, {
-          'status': 2,
-          'rider_id': riderId,
-          'updated_at': FieldValue.serverTimestamp(),
-        });
-      });
-
-      Get.back(); // ปิดหน้ารายละเอียด
+      await _riderApi.acceptShipment(
+        riderId: riderId,
+        shipmentId: shipmentId,
+      );
+      Get.back();
       Get.snackbar('สำเร็จ', 'รับงานเรียบร้อย',
           snackPosition: SnackPosition.BOTTOM);
     } catch (e) {
@@ -150,263 +73,102 @@ class _DetailShipmentsState extends State<DetailShipments> {
     }
   }
 
-  // ===== UI =====
   @override
   Widget build(BuildContext context) {
-    // รับ argument จาก Get
     final args = (Get.arguments ?? {}) as Map?;
     final shipmentId = (args?['shipment_id'] ?? args?['id'] ?? '').toString();
-    final initialSnapshot =
-        (args?['snapshot'] ?? const <String, dynamic>{}) as Map?;
 
     return Scaffold(
       backgroundColor: _bg,
       appBar: AppBar(
-        backgroundColor: _orange,
-        title: const Text('รายละเอียด'),
+        backgroundColor: Colors.transparent,
         elevation: 0,
-        leading: IconButton(
-          icon:
-              const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white),
-          onPressed: () => Get.back(),
+        leading: Container(
+          margin: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(10),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.08),
+                blurRadius: 8,
+              )
+            ],
+          ),
+          child: IconButton(
+            icon: const Icon(Icons.arrow_back_ios_new_rounded,
+                color: _orange, size: 20),
+            onPressed: () => Get.back(),
+          ),
         ),
+        title: const Text(
+          'รายละเอียดงาน',
+          style: TextStyle(
+            fontWeight: FontWeight.w900,
+            fontSize: 20,
+            color: Colors.orange,
+          ),
+        ),
+        centerTitle: false,
       ),
       body: shipmentId.isEmpty
           ? const Center(child: Text('ไม่พบรหัสงาน'))
-          : StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-              stream: FirebaseFirestore.instance
-                  .collection('shipments')
-                  .doc(shipmentId)
-                  .snapshots(),
+          : StreamBuilder<ShipmentDetail?>(
+              stream: _shipmentApi.watchShipmentDetail(shipmentId),
               builder: (context, snap) {
-                // ใช้ข้อมูลเริ่มต้นก่อน ถ้า stream ยังมาไม่ถึง
-                final data = (snap.data?.data() ??
-                        (initialSnapshot ?? <String, dynamic>{}))
-                    as Map<String, dynamic>;
-
-                if (!snap.hasData && (data.isEmpty)) {
+                if (snap.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
                 }
+                final d = snap.data;
+                if (d == null) {
+                  return const Center(child: Text('ไม่พบข้อมูลงานนี้'));
+                }
 
-                // ---- สกัดฟิลด์หลัก ----
-                final brand = 'Delivery WarpSong';
-                final photoUrl =
-                    (data['last_photo_url'] ?? data['photo_url'] ?? '')
-                        .toString();
-                final itemName =
-                    (data['item_name'] ?? data['itemName'] ?? '-').toString();
-                final itemDesc =
-                    (data['item_description'] ?? data['itemDescription'] ?? '')
-                        .toString();
-                final statusRaw = data['status'];
-                final status = (statusRaw is int)
-                    ? statusRaw
-                    : int.tryParse('$statusRaw') ?? 0;
+                const brand = 'Delivery WarpSong';
+                final photoUrl = d.photoUrl;
+                final itemName = d.itemName;
+                final itemDesc = d.itemDesc;
+                final canAccept = d.status == 1;
 
-                // sender / receiver & snapshot
-                final sender =
-                    _asMap(data['sender_snapshot'] ?? data['sender']);
-                final receiver =
-                    _asMap(data['receiver_snapshot'] ?? data['receiver']);
-                final deliverySnap =
-                    _asMap(data['delivery_address_snapshot'] ?? {});
-                final pickupSnap = _asMap(sender['pickup_address']);
+                final s = d.sender;
+                final r = d.receiver;
 
-                // sender
-                final sName = (sender['name'] ?? '').toString();
-                final sPhone =
-                    (sender['phone'] ?? sender['phoneNumber'] ?? '').toString();
-                final sPickupId = (sender['pickup_address_id'] ??
-                        data['pickup_address_id'] ??
-                        '')
-                    .toString();
-                final sAddressImmediate = (pickupSnap['detail'] ??
-                        pickupSnap['address_text'] ??
-                        _asMap(sender['address'])['address_text'] ??
-                        '')
-                    .toString();
-                final sAvatarUrl = _pickPhotoUrl(sender);
-
-                // receiver
-                final rName = (receiver['name'] ?? '').toString();
-                final rPhone =
-                    (receiver['phone'] ?? receiver['phoneNumber'] ?? '')
-                        .toString();
-                final rAddrId = (receiver['address_id'] ??
-                        data['delivery_address_id'] ??
-                        '')
-                    .toString();
-                final rAddressImmediate = (deliverySnap['detail'] ??
-                        deliverySnap['address_text'] ??
-                        _asMap(receiver['address'])['address_text'] ??
-                        '')
-                    .toString();
-                final rAvatarUrl = _pickPhotoUrl(receiver);
-
-                final canAccept = status == 1; // งานว่างเท่านั้น
-
-                return Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 12, 12, 20),
-                  child: Column(
-                    children: [
-                      // การ์ดรายละเอียด
-                      Container(
-                        width: double.infinity,
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          border: Border.all(color: _orange, width: 1.5),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+                return LayoutBuilder(
+                  builder: (context, constraints) {
+                    return SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+                      child: ConstrainedBox(
+                        constraints:
+                            BoxConstraints(minHeight: constraints.maxHeight),
+                        child: IntrinsicHeight(
                           child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              Container(
-                                alignment: Alignment.centerLeft,
-                                padding:
-                                    const EdgeInsets.symmetric(vertical: 6.0),
-                                child: const Text(
-                                  'รายละเอียดรายการสินค้า',
-                                  style: TextStyle(
-                                    color: Colors.orange,
-                                    fontWeight: FontWeight.w800,
-                                  ),
+                              ScaleTransition(
+                                scale: Tween<double>(begin: 0.95, end: 1.0)
+                                    .animate(_scaleController),
+                                child: _DetailCard(
+                                  brand: brand,
+                                  photoUrl: photoUrl,
+                                  itemName: itemName,
+                                  itemDesc: itemDesc,
+                                  sender: s,
+                                  receiver: r,
+                                  getInitials: _initials,
                                 ),
                               ),
-                              AspectRatio(
-                                aspectRatio: 16 / 9,
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(8),
-                                  child: photoUrl.isEmpty
-                                      ? Container(
-                                          color: const Color(0xFFEFEFEF),
-                                          child: const Icon(
-                                            Icons.image,
-                                            size: 48,
-                                            color: Colors.black26,
-                                          ),
-                                        )
-                                      : Image.network(
-                                          photoUrl,
-                                          fit: BoxFit.cover,
-                                          errorBuilder: (_, __, ___) =>
-                                              Container(
-                                            color: const Color(0xFFEFEFEF),
-                                            child: const Icon(
-                                              Icons.broken_image_outlined,
-                                              size: 48,
-                                              color: Colors.black26,
-                                            ),
-                                          ),
-                                        ),
-                                ),
+                              const SizedBox(height: 24),
+                              const Spacer(),
+                              _ActionButtons(
+                                canAccept: canAccept,
+                                onAccept: () => _accept(d.id),
                               ),
-                              const SizedBox(height: 8),
-                              Text(
-                                brand,
-                                style: const TextStyle(
-                                  color: Colors.orange,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-
-                              // ผู้ส่ง
-                              _PersonBlock(
-                                title: 'ผู้ส่ง',
-                                name: sName,
-                                phone: sPhone,
-                                addressWidget: _AddressText(
-                                  immediateText: sAddressImmediate,
-                                  addressIdForFallback: sPickupId,
-                                  loadById: _loadAddressTextById,
-                                ),
-                                avatarUrl: sAvatarUrl,
-                                initials: _initials(sName),
-                              ),
-                              const Divider(height: 20),
-
-                              // ผู้รับ
-                              _PersonBlock(
-                                title: 'ผู้รับ',
-                                name: rName,
-                                phone: rPhone,
-                                addressWidget: _AddressText(
-                                  immediateText: rAddressImmediate,
-                                  addressIdForFallback: rAddrId,
-                                  loadById: _loadAddressTextById,
-                                ),
-                                avatarUrl: rAvatarUrl,
-                                initials: _initials(rName),
-                              ),
-
-                              const SizedBox(height: 8),
-                              if (itemName.isNotEmpty) ...[
-                                const SizedBox(height: 6),
-                                Text('สินค้า: $itemName',
-                                    style: const TextStyle(
-                                        fontWeight: FontWeight.w700)),
-                              ],
-                              if (itemDesc.isNotEmpty)
-                                Text('รายละเอียด: $itemDesc'),
                             ],
                           ),
                         ),
                       ),
-
-                      const Spacer(),
-
-                      // ปุ่ม “รับงาน” + “กลับ”
-                      SizedBox(
-                        width: double.infinity,
-                        child: Column(
-                          children: [
-                            SizedBox(
-                              width: double.infinity,
-                              height: 46,
-                              child: ElevatedButton(
-                                onPressed: canAccept
-                                    ? () => _accept(shipmentId)
-                                    : null,
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: _orange,
-                                  foregroundColor: Colors.white,
-                                  disabledBackgroundColor:
-                                      const Color(0xFFCCCCCC),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(10),
-                                  ),
-                                  textStyle: const TextStyle(
-                                      fontWeight: FontWeight.w800),
-                                ),
-                                child: const Text('รับงาน'),
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            SizedBox(
-                              width: double.infinity,
-                              height: 42,
-                              child: OutlinedButton(
-                                onPressed: () => Get.back(),
-                                style: OutlinedButton.styleFrom(
-                                  foregroundColor: _orange,
-                                  side: const BorderSide(
-                                      color: _orange, width: 2),
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(10),
-                                  ),
-                                  textStyle: const TextStyle(
-                                      fontWeight: FontWeight.w800),
-                                ),
-                                child: const Text('กลับ'),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
+                    );
+                  },
                 );
               },
             ),
@@ -414,24 +176,323 @@ class _DetailShipmentsState extends State<DetailShipments> {
   }
 }
 
-// ===== Sub-widgets =====
+class _DetailCard extends StatelessWidget {
+  const _DetailCard({
+    required this.brand,
+    required this.photoUrl,
+    required this.itemName,
+    required this.itemDesc,
+    required this.sender,
+    required this.receiver,
+    required this.getInitials,
+  });
 
-class _PersonBlock extends StatelessWidget {
-  const _PersonBlock({
+  final String brand;
+  final String photoUrl;
+  final String itemName;
+  final String itemDesc;
+  final dynamic sender;
+  final dynamic receiver;
+  final String Function(String) getInitials;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFFFD8700).withOpacity(0.12),
+            blurRadius: 24,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _HeaderSection(brand: brand),
+            const SizedBox(height: 18),
+            _ImageSection(photoUrl: photoUrl),
+            const SizedBox(height: 18),
+            _ItemInfoSection(
+              itemName: itemName,
+              itemDesc: itemDesc,
+            ),
+            const SizedBox(height: 20),
+            _PersonSection(
+              title: 'ผู้ส่ง',
+              icon: Icons.person_outline,
+              name: sender.name,
+              phone: sender.phone,
+              address: sender.address.text,
+              avatarUrl: sender.avatarUrl,
+              initials: getInitials(sender.name),
+            ),
+            const SizedBox(height: 20),
+            Container(
+              height: 1,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    Colors.transparent,
+                    Colors.grey.withOpacity(0.2),
+                    Colors.transparent,
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+            _PersonSection(
+              title: 'ผู้รับ',
+              icon: Icons.location_on_outlined,
+              name: receiver.name,
+              phone: receiver.phone,
+              address: receiver.address.text,
+              avatarUrl: receiver.avatarUrl,
+              initials: getInitials(receiver.name),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HeaderSection extends StatelessWidget {
+  const _HeaderSection({required this.brand});
+
+  final String brand;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Container(
+              width: 5,
+              height: 24,
+              decoration: BoxDecoration(
+                color: const Color(0xFFFD8700),
+                borderRadius: BorderRadius.circular(3),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                brand,
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w900,
+                  color: Color(0xFFFD8700),
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text(
+          'รายละเอียดรายการสินค้า',
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: Colors.black54,
+            letterSpacing: 0.4,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ImageSection extends StatelessWidget {
+  const _ImageSection({required this.photoUrl});
+
+  final String photoUrl;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.08),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          )
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(14),
+        child: AspectRatio(
+          aspectRatio: 16 / 9,
+          child: photoUrl.isEmpty
+              ? Container(
+                  color: Colors.grey.shade200,
+                  child: const Icon(Icons.image, size: 56, color: Colors.grey),
+                )
+              : Image.network(
+                  photoUrl,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => Container(
+                    color: Colors.grey.shade200,
+                    child: const Icon(Icons.broken_image_outlined,
+                        size: 56, color: Colors.grey),
+                  ),
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ItemInfoSection extends StatelessWidget {
+  const _ItemInfoSection({
+    required this.itemName,
+    required this.itemDesc,
+  });
+
+  final String itemName;
+  final String itemDesc;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            const Color(0xFFFFF9F3),
+            const Color(0xFFFFFBF5),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFFFE4C7), width: 1.5),
+      ),
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.shopping_bag_outlined,
+                  color: const Color(0xFFFD8700), size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'สินค้า',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12,
+                    color: Colors.black54,
+                    letterSpacing: 0.3,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (itemName.isNotEmpty)
+            Text(
+              itemName,
+              style: const TextStyle(
+                fontWeight: FontWeight.w800,
+                fontSize: 14,
+                color: Colors.black87,
+              ),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          if (itemDesc.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              itemDesc,
+              style: const TextStyle(
+                fontSize: 12,
+                color: Colors.black54,
+                height: 1.4,
+              ),
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _StepBadge extends StatelessWidget {
+  const _StepBadge({
+    required this.icon,
+    required this.label,
+    required this.isActive,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool isActive;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+      decoration: BoxDecoration(
+        color: isActive ? const Color(0xFFFFF9F3) : Colors.grey.shade100,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: isActive ? const Color(0xFFFFE4C7) : Colors.grey.shade300,
+          width: 1.2,
+        ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            icon,
+            color: isActive ? const Color(0xFFFD8700) : Colors.grey.shade400,
+            size: 20,
+          ),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: isActive ? const Color(0xFFFD8700) : Colors.grey.shade500,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PersonSection extends StatelessWidget {
+  const _PersonSection({
     required this.title,
+    required this.icon,
     required this.name,
     required this.phone,
-    required this.addressWidget,
+    required this.address,
     required this.avatarUrl,
     required this.initials,
   });
 
   final String title;
+  final IconData icon;
   final String name;
   final String phone;
-  final Widget addressWidget;
-
-  // รูปโปรไฟล์ (ถ้าไม่มีจะโชว์ตัวอักษรย่อ)
+  final String address;
   final String avatarUrl;
   final String initials;
 
@@ -442,52 +503,103 @@ class _PersonBlock extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Avatar
         Container(
-          margin: const EdgeInsets.only(top: 2),
-          height: 44,
-          width: 44,
-          decoration: const BoxDecoration(shape: BoxShape.circle),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFFFD8700).withOpacity(0.15),
+                blurRadius: 10,
+                spreadRadius: 2,
+              )
+            ],
+          ),
           child: ClipOval(
-            child: hasAvatar
-                ? Image.network(
-                    avatarUrl,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) =>
-                        _InitialsAvatar(initials: initials),
-                  )
-                : _InitialsAvatar(initials: initials),
+            child: SizedBox(
+              height: 52,
+              width: 52,
+              child: hasAvatar
+                  ? Image.network(
+                      avatarUrl,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) =>
+                          _InitialsAvatar(initials: initials),
+                    )
+                  : _InitialsAvatar(initials: initials),
+            ),
           ),
         ),
-        const SizedBox(width: 10),
+        const SizedBox(width: 14),
         Expanded(
-          child: DefaultTextStyle(
-            style: const TextStyle(color: Colors.black87, height: 1.25),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(icon, color: const Color(0xFFFD8700), size: 16),
+                  const SizedBox(width: 6),
+                  Text(
+                    title,
                     style: const TextStyle(
-                        fontWeight: FontWeight.w800, color: Colors.black54)),
-                const SizedBox(height: 2),
-                Text(
-                  name.isEmpty ? '-' : name,
-                  style: const TextStyle(fontWeight: FontWeight.w800),
+                      fontWeight: FontWeight.w800,
+                      fontSize: 12,
+                      color: Color(0xFFFD8700),
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                name.isEmpty ? '-' : name,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w800,
+                  fontSize: 14,
+                  color: Colors.black87,
                 ),
-                if (phone.isNotEmpty)
-                  Text('โทร: $phone',
-                      style: const TextStyle(color: Colors.black87)),
-                const SizedBox(height: 2),
+              ),
+              if (phone.isNotEmpty) ...[
+                const SizedBox(height: 3),
                 Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('ที่อยู่: ',
-                        style: TextStyle(fontWeight: FontWeight.w700)),
-                    Expanded(child: addressWidget),
+                    Icon(Icons.phone_outlined, color: Colors.black38, size: 14),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        phone,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.black54,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
                   ],
                 ),
               ],
-            ),
+              const SizedBox(height: 6),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.location_on_outlined,
+                      color: Colors.black38, size: 14),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      address.isEmpty ? '-' : address,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.black54,
+                        height: 1.4,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
         ),
       ],
@@ -497,56 +609,128 @@ class _PersonBlock extends StatelessWidget {
 
 class _InitialsAvatar extends StatelessWidget {
   const _InitialsAvatar({required this.initials});
+
   final String initials;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: const Color(0xFFECECEC),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            const Color(0xFFFFF5E8),
+            const Color(0xFFFFE9D0),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+      ),
       alignment: Alignment.center,
       child: Text(
         (initials.isEmpty ? '–' : initials),
         style: const TextStyle(
-          fontWeight: FontWeight.w800,
-          fontSize: 16,
-          color: Colors.black54,
+          fontWeight: FontWeight.w900,
+          fontSize: 18,
+          color: Color(0xFFFD8700),
         ),
       ),
     );
   }
 }
 
-class _AddressText extends StatelessWidget {
-  const _AddressText({
-    Key? key,
-    required this.immediateText,
-    required this.addressIdForFallback,
-    required this.loadById,
-  }) : super(key: key);
+class _ActionButtons extends StatefulWidget {
+  const _ActionButtons({
+    required this.canAccept,
+    required this.onAccept,
+  });
 
-  final String immediateText;
-  final String addressIdForFallback;
-  final Future<String> Function(String id) loadById;
+  final bool canAccept;
+  final VoidCallback onAccept;
+
+  @override
+  State<_ActionButtons> createState() => _ActionButtonsState();
+}
+
+class _ActionButtonsState extends State<_ActionButtons> {
+  bool _isHovered = false;
 
   @override
   Widget build(BuildContext context) {
-    if (immediateText.trim().isNotEmpty) {
-      return Text(immediateText, maxLines: 2, overflow: TextOverflow.ellipsis);
-    }
-    if (addressIdForFallback.isEmpty) {
-      return const Text('-', maxLines: 2, overflow: TextOverflow.ellipsis);
-    }
-    return FutureBuilder<String>(
-      future: loadById(addressIdForFallback),
-      builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const Text('กำลังโหลดที่อยู่...',
-              maxLines: 2, overflow: TextOverflow.ellipsis);
-        }
-        final txt = (snap.data ?? '').toString();
-        return Text(txt.isEmpty ? '-' : txt,
-            maxLines: 2, overflow: TextOverflow.ellipsis);
-      },
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        MouseRegion(
+          onEnter: (_) => setState(() => _isHovered = true),
+          onExit: (_) => setState(() => _isHovered = false),
+          child: SizedBox(
+            width: double.infinity,
+            height: 54,
+            child: ElevatedButton(
+              onPressed: widget.canAccept ? widget.onAccept : null,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: widget.canAccept
+                    ? const Color(0xFFFD8700)
+                    : Colors.grey.shade300,
+                foregroundColor:
+                    widget.canAccept ? Colors.white : Colors.grey.shade600,
+                elevation: _isHovered && widget.canAccept ? 8 : 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                textStyle: const TextStyle(
+                  fontWeight: FontWeight.w800,
+                  fontSize: 16,
+                ),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.check_circle_outline,
+                      size: 20,
+                      color: widget.canAccept
+                          ? Colors.white
+                          : Colors.grey.shade600),
+                  const SizedBox(width: 8),
+                  Text(
+                    widget.canAccept ? 'รับงาน' : 'งานนี้ยังไม่พร้อม',
+                    style: const TextStyle(letterSpacing: 0.3),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          height: 50,
+          child: OutlinedButton(
+            onPressed: () => Get.back(),
+            style: OutlinedButton.styleFrom(
+              foregroundColor: const Color(0xFFFD8700),
+              side: const BorderSide(
+                color: Color(0xFFFD8700),
+                width: 2,
+              ),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              textStyle: const TextStyle(
+                fontWeight: FontWeight.w800,
+                fontSize: 15,
+              ),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.arrow_back_ios_new_rounded, size: 16),
+                const SizedBox(width: 8),
+                const Text('กลับ'),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

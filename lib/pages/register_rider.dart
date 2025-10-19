@@ -1,9 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:crypto/crypto.dart';
-import 'package:firebase_storage/firebase_storage.dart';
+import 'package:deliverydomo/pages/login.dart';
+import 'package:deliverydomo/services/firebase_rider.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:image_picker/image_picker.dart';
@@ -27,7 +27,8 @@ class _RegisterRiderState extends State<RegisterRider> {
   File? _avatarFile;
   File? _vehicleFile;
 
-  // ===== helpers =====
+  final _api = FirebaseRiderApi();
+
   String _normalizePhone(String s) => s.replaceAll(RegExp(r'\D'), '');
   String _hashPasswordNoSalt(String password, String phone) =>
       sha256.convert(utf8.encode('$phone::$password')).toString();
@@ -51,7 +52,6 @@ class _RegisterRiderState extends State<RegisterRider> {
     );
   }
 
-  // ---------- Image pickers (กล้อง/แกลเลอรี) ----------
   Future<void> _selectImage({required bool forAvatar}) async {
     final src = await _chooseImageSource();
     if (src == null) return;
@@ -73,7 +73,7 @@ class _RegisterRiderState extends State<RegisterRider> {
     });
   }
 
-  Future<ImageSource?> _chooseImageSource() async {
+  Future<ImageSource?> _chooseImageSource() {
     return showModalBottomSheet<ImageSource>(
       context: context,
       shape: const RoundedRectangleBorder(
@@ -107,68 +107,6 @@ class _RegisterRiderState extends State<RegisterRider> {
         ),
       ),
     );
-  }
-
-  Future<String> _uploadToStorage({
-    required String path,
-    required File file,
-    String contentType = 'image/jpeg',
-  }) async {
-    final ref = FirebaseStorage.instance.ref(path);
-    final snap =
-        await ref.putFile(file, SettableMetadata(contentType: contentType));
-    debugPrint(
-        '[Storage] uploaded bucket=${snap.ref.bucket} path=${snap.ref.fullPath}');
-    return await snap.ref.getDownloadURL();
-  }
-
-  /// เช็คซ้ำด้วยตารางแมป phone_to_uid (ไม่ผูก users กับเบอร์แล้ว)
-  Future<bool> _phoneAlreadyRegistered(String phone) async {
-    final map = await FirebaseFirestore.instance
-        .collection('phone_to_uid')
-        .doc(phone)
-        .get();
-    return map.exists;
-  }
-
-  /// สร้างเอกสาร users/{uid}, riders/{uid}, และ phone_to_uid/{phone} ใน Transaction เดียว
-  Future<void> _createRiderWithMapping({
-    required String uid,
-    required String phone,
-    required String name,
-    required String passwordHash,
-    required String plate,
-    String? avatarUrl,
-    String? vehicleUrl,
-  }) async {
-    final fs = FirebaseFirestore.instance;
-    final users = fs.collection('users').doc(uid);
-    final riders = fs.collection('riders').doc(uid);
-    final phones = fs.collection('phone_to_uid').doc(phone);
-    final now = FieldValue.serverTimestamp();
-
-    await fs.runTransaction((tx) async {
-      // ป้องกันเบอร์ซ้ำซ้อนอีกชั้น
-      final mapSnap = await tx.get(phones);
-      if (mapSnap.exists) {
-        throw Exception('เบอร์นี้ถูกใช้งานแล้ว');
-      }
-
-      tx.set(riders, {
-        'userId': uid,
-        'name': name,
-        'phoneNumber': phone,
-        'passwordHash': passwordHash,
-        'plateNumber': plate,
-        'avatarUrl': avatarUrl,
-        'vehiclePhotoUrl': vehicleUrl,
-        'createdAt': now,
-        'updatedAt': now,
-      });
-
-      // mapping: phone -> uid
-      tx.set(phones, {'uid': uid});
-    });
   }
 
   void _showSuccessDialog({
@@ -211,8 +149,7 @@ class _RegisterRiderState extends State<RegisterRider> {
                   padding: const EdgeInsets.symmetric(vertical: 12),
                 ),
                 onPressed: () {
-                  Get.back(); // ปิด dialog
-                  Get.back(); // กลับหน้าเดิม
+                  Get.to(() => const LoginPage());
                 },
                 child:
                     const Text('ตกลง', style: TextStyle(color: Colors.white)),
@@ -234,61 +171,37 @@ class _RegisterRiderState extends State<RegisterRider> {
     final plate = _plate.text.trim();
 
     if (_avatarFile == null) {
-      _toast('กรุณาเลือกรูปโปรไฟล์ไรเดอร์', success: false);
+      _toast('กรุณาเลือกรูปโปรไฟล์ไรเดอร์');
       return;
     }
 
     setState(() => _loading = true);
 
     try {
-      // 1) กันซ้ำด้วย phone_to_uid
-      if (await _phoneAlreadyRegistered(phone)) {
-        _toast('เบอร์นี้ถูกสมัครแล้ว');
-        return;
-      }
-
-      // 2) สร้าง uid ใหม่ก่อน แล้วค่อยอัปโหลดโดยอิง uid
-      final fs = FirebaseFirestore.instance;
-      final uid = fs.collection('users').doc().id;
-
-      // 3) อัปโหลดรูป (ผูกพาธกับ uid แทนการใช้เบอร์)
-      final ts = DateTime.now().millisecondsSinceEpoch;
-      final avatarUrl = await _uploadToStorage(
-        path: 'riders/$uid/avatar_$ts.jpg',
-        file: _avatarFile!,
-      );
-
-      String? vehicleUrl;
-      if (_vehicleFile != null) {
-        vehicleUrl = await _uploadToStorage(
-          path: 'riders/$uid/vehicle_$ts.jpg',
-          file: _vehicleFile!,
-        );
-      }
-
-      // 4) แฮชรหัสผ่าน (ตามสูตรเดิม)
       final hash = _hashPasswordNoSalt(pass, phone);
 
-      // 5) เขียน Firestore ทั้งหมดใน Transaction
-      await _createRiderWithMapping(
-        uid: uid,
+      final res = await _api.createRider(
         phone: phone,
         name: name,
         passwordHash: hash,
-        plate: plate,
-        avatarUrl: avatarUrl,
-        vehicleUrl: vehicleUrl,
+        plateNumber: plate,
+        avatarFile: _avatarFile!,
+        vehicleFile: _vehicleFile,
       );
 
       _toast('สมัครไรเดอร์สำเร็จ', success: true);
       _showSuccessDialog(
         name: name,
         phone: phone,
-        avatarUrl: avatarUrl,
+        avatarUrl: res.avatarUrl,
         plate: plate,
       );
-    } on FirebaseException catch (e) {
-      _toast('สมัครไม่สำเร็จ: [${e.code}] ${e.message}');
+    } on FirebaseRiderApiError catch (e) {
+      if (e.code == 'PHONE_TAKEN') {
+        _toast('เบอร์นี้ถูกสมัครแล้ว');
+      } else {
+        _toast('สมัครไม่สำเร็จ: ${e.code}');
+      }
     } catch (e) {
       _toast('สมัครไม่สำเร็จ: $e');
     } finally {
@@ -498,15 +411,10 @@ class _RegisterRiderState extends State<RegisterRider> {
                                     crossAxisAlignment:
                                         CrossAxisAlignment.start,
                                     children: [
-                                      Text('เอกสาร/รูปรถ',
+                                      Text('รูปรถ',
                                           style: TextStyle(
                                               fontWeight: FontWeight.w700)),
                                       SizedBox(height: 4),
-                                      Text(
-                                          'อัปโหลดรูปบัตร/รูปรถเพื่อยืนยันตัวตน',
-                                          style: TextStyle(
-                                              fontSize: 12,
-                                              color: Colors.black54)),
                                     ],
                                   ),
                                 ),

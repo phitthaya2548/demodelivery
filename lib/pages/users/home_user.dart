@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:deliverydomo/pages/riders/widgets/appbar.dart';
 import 'package:deliverydomo/pages/sesstion.dart';
-import 'package:firebase_storage/firebase_storage.dart';
+import 'package:deliverydomo/services/firebase_shipment.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:image_picker/image_picker.dart';
@@ -20,17 +20,20 @@ class _HomeUserState extends State<HomeUser> {
   static const _orange = Color(0xFFFD8700);
   static const _orangeSoft = Color(0xFFFFE4BD);
   static const _bg = Color(0xFFF8F6F2);
+  static const _pillBg = Color(0xFFFFF5E6);
 
   // Controllers (สินค้า)
   final _phoneCtrl = TextEditingController(); // ค้นหาผู้รับ
   final _itemNameCtrl = TextEditingController();
   final _itemNoteCtrl = TextEditingController();
 
+  // Shipment API (คุย Firestore/Storage เฉพาะเรื่อง shipments)
+  final _shipApi = ShipmentApi();
+
   // Runtime: ผู้รับ
   bool _searching = false;
   bool _creating = false;
-  bool _addingToCart =
-      false; // เดิม: add to cart → ตอนนี้แปลว่า "เพิ่มเป็น draft"
+  bool _addingToCart = false; // “เพิ่มเป็น draft”
   bool _sendingAll = false;
   String? _uid; // uid ของผู้รับ
   Map<String, dynamic>? _user; // users/{uid}
@@ -61,17 +64,6 @@ class _HomeUserState extends State<HomeUser> {
     ));
   }
 
-  // ===== Helper แปลงค่า (สำหรับซิงก์จากเซิร์ฟเวอร์) =====
-  Timestamp? _ts(dynamic v) {
-    if (v == null) return null;
-    try {
-      final dt = DateTime.parse(v.toString()).toUtc();
-      return Timestamp.fromDate(dt);
-    } catch (_) {
-      return null;
-    }
-  }
-
   double? _toDouble(dynamic v) {
     if (v == null) return null;
     if (v is num) return v.toDouble();
@@ -88,7 +80,10 @@ class _HomeUserState extends State<HomeUser> {
 
   Map<String, dynamic> _normalizeAddressMap(Map<String, dynamic>? raw) {
     final m = (raw ?? {});
-    final detail = (m['detail'] ?? m['address_text'] ?? '').toString().trim();
+    final detail =
+        (m['detail_normalized'] ?? m['address_text'] ?? m['detail'] ?? '')
+            .toString()
+            .trim();
     final label = (m['label'] ?? m['name'] ?? m['name_address'] ?? 'ที่อยู่')
         .toString()
         .trim();
@@ -109,7 +104,7 @@ class _HomeUserState extends State<HomeUser> {
 
     return {
       'label': label,
-      'detail': detail,
+      'detail': (m['detail'] ?? '').toString(),
       'detail_normalized': normalizedText,
       if (phone.isNotEmpty) 'phone': phone,
       if (location != null) 'location': location,
@@ -123,34 +118,35 @@ class _HomeUserState extends State<HomeUser> {
     final doc = await fs.collection('users').doc(uidOrPhone).get();
     if (doc.exists) return doc.data();
 
+    // legacy fallback (เคยใช้ phone เป็น doc id)
     final legacy = await fs.collection('users').doc(uidOrPhone).get();
     return legacy.data();
   }
 
   String _pickPhotoUrl(Map<String, dynamic>? user) {
     if (user == null) return '';
-    final candidates = [
-      'photoUrl',
-      'avatarUrl',
-      'avatar',
-      'photo_url',
-      'imageUrl'
-    ];
-    for (final k in candidates) {
-      final v = (user[k] ?? '').toString();
-      if (v.isNotEmpty) return v;
-    }
-    return '';
+
+    // ตรวจสอบว่า avatarUrl อัปเดตแล้วหรือไม่
+    final avatarUrl = (user['avatarUrl'] ?? '').toString();
+    if (avatarUrl.isNotEmpty) return avatarUrl;
+
+    // หากไม่พบ avatarUrl ให้ตรวจสอบ photoUrl
+    final photoUrl = (user['photoUrl'] ?? '').toString();
+    if (photoUrl.isNotEmpty) return photoUrl;
+
+    return ''; // หากไม่มี URL
   }
 
   // ======= ค้นหา/โหลดข้อมูล =======
   Future<String?> _resolveUidByPhone(String phone) async {
     final fs = FirebaseFirestore.instance;
 
+    // mapping phone→uid
     final map = await fs.collection('phone_to_uid').doc(phone).get();
     final mapped = (map.data()?['uid'] ?? '').toString();
     if (mapped.isNotEmpty) return mapped;
 
+    // users query
     final q = await fs
         .collection('users')
         .where('phone', isEqualTo: phone)
@@ -158,6 +154,7 @@ class _HomeUserState extends State<HomeUser> {
         .get();
     if (q.docs.isNotEmpty) return q.docs.first.id;
 
+    // legacy docId = phone
     final legacy = await fs.collection('users').doc(phone).get();
     if (legacy.exists) return phone;
 
@@ -218,6 +215,7 @@ class _HomeUserState extends State<HomeUser> {
       }).toList();
     }
 
+    // default → ใหม่สุด
     list.sort((a, b) {
       final da = a['is_default'] == true ? 0 : 1;
       final db = b['is_default'] == true ? 0 : 1;
@@ -363,15 +361,6 @@ class _HomeUserState extends State<HomeUser> {
     };
   }
 
-  Future<String?> _uploadItemPhoto(String parentId, File file) async {
-    final path =
-        'shipments/$parentId/item_${DateTime.now().millisecondsSinceEpoch}.jpg';
-    final ref = FirebaseStorage.instance.ref(path);
-    final snap =
-        await ref.putFile(file, SettableMetadata(contentType: 'image/jpeg'));
-    return await snap.ref.getDownloadURL();
-  }
-
   // ============== สร้างคำสั่งเดี่ยวแบบยืนยัน (status=1) ==============
   Future<void> _createShipment() async {
     if (_uid == null) {
@@ -397,9 +386,6 @@ class _HomeUserState extends State<HomeUser> {
     setState(() => _creating = true);
 
     try {
-      final fs = FirebaseFirestore.instance;
-      final shipments = fs.collection('shipments');
-
       final senderProfile = await _loadUserProfileSafe(
           SessionStore.userId ?? SessionStore.phoneId);
       final senderPhotoUrl = _pickPhotoUrl(senderProfile);
@@ -421,21 +407,14 @@ class _HomeUserState extends State<HomeUser> {
       final receiverAddrNorm =
           receiverAddr == null ? null : _normalizeAddressMap(receiverAddr);
 
-      final docRef = shipments.doc();
-      final now = FieldValue.serverTimestamp();
-
-      final payload = {
-        'id': docRef.id,
-        'sender_id': senderId,
-        'receiver_id': _uid,
-        'pickup_address_id': senderPickup?['id'],
-        'delivery_address_id': _addressIdSelected,
-        'item_name': itemName,
-        'item_description': _itemNoteCtrl.text.trim(),
-        'status': 1, // ยืนยันส่งทันที
-        'created_at': now,
-        'updated_at': now,
-        'sender_snapshot': {
+      await _shipApi.createConfirmed(
+        senderId: senderId,
+        receiverId: _uid!,
+        pickupAddressId: senderPickup?['id'],
+        deliveryAddressId: _addressIdSelected,
+        itemName: itemName,
+        itemDescription: _itemNoteCtrl.text,
+        senderSnapshot: {
           'user_id': senderId,
           'name': (SessionStore.fullname ?? '').toString(),
           'phone': (SessionStore.phoneId ?? '').toString(),
@@ -443,29 +422,16 @@ class _HomeUserState extends State<HomeUser> {
           'pickup_address_id': senderPickup?['id'],
           'pickup_address': senderPickupNorm,
         },
-        'receiver_snapshot': {
+        receiverSnapshot: {
           'user_id': _uid,
           'name': (_user?['name'] ?? _user?['fullname'] ?? '').toString(),
           'phone': (_user?['phone'] ?? '').toString(),
           'photo_url': receiverPhotoUrl,
           'address_id': _addressIdSelected,
         },
-        'delivery_address_snapshot': receiverAddrNorm,
-        'last_photo_url': '',
-        'last_photo_uploaded_at': null,
-      };
-
-      await docRef.set(payload);
-
-      if (_photoFile != null) {
-        final url = await _uploadItemPhoto(docRef.id, _photoFile!);
-        if (url != null) {
-          await docRef.update({
-            'last_photo_url': url,
-            'last_photo_uploaded_at': now,
-          });
-        }
-      }
+        deliveryAddressSnapshot: receiverAddrNorm,
+        firstPhotoFile: _photoFile,
+      );
 
       _toast('สร้างคำสั่งสำเร็จ', success: true);
 
@@ -475,7 +441,6 @@ class _HomeUserState extends State<HomeUser> {
         _photoFile = null;
       });
 
-      // อัปเดตตัวนับ draft (เผื่อมีค้างอยู่)
       await _refreshCartCount();
     } catch (e) {
       _toast('สร้างคำสั่งล้มเหลว: $e');
@@ -484,7 +449,7 @@ class _HomeUserState extends State<HomeUser> {
     }
   }
 
-  // ============== “เพิ่มเข้าตะกร้า” → เปลี่ยนเป็น สร้าง draft ใน shipments (status=0) ==============
+  // ============== เพิ่มเป็น Draft (status=0) ==============
   Future<void> _addToCart() async {
     if (_uid == null) return _toast('กรุณาค้นหาผู้รับก่อน');
     if (_addressIdSelected == null) {
@@ -502,11 +467,6 @@ class _HomeUserState extends State<HomeUser> {
     setState(() => _addingToCart = true);
 
     try {
-      final fs = FirebaseFirestore.instance;
-      final shipments = fs.collection('shipments');
-
-      final now = FieldValue.serverTimestamp();
-
       final senderProfile = await _loadUserProfileSafe(
           SessionStore.userId ?? SessionStore.phoneId);
       final senderPhotoUrl = _pickPhotoUrl(senderProfile);
@@ -518,29 +478,20 @@ class _HomeUserState extends State<HomeUser> {
           _senderPickupAddress ?? await _getSenderDefaultAddress();
       final senderPickupNorm = _normalizeAddressMap(senderPickup);
 
-      final a = _addresses.isNotEmpty ? _addresses.first : null;
-      final receiverAddrNorm = a == null ? null : _normalizeAddressMap(a);
+      final receiverAddr = _addresses.firstWhere(
+        (a) => a['id'] == _addressIdSelected,
+        orElse: () => {},
+      );
+      final receiverAddrNorm = _normalizeAddressMap(receiverAddr);
 
-      final docRef = shipments.doc();
-
-      String photoUrl = '';
-      if (_photoFile != null) {
-        final url = await _uploadItemPhoto(docRef.id, _photoFile!);
-        if (url != null) photoUrl = url;
-      }
-
-      await docRef.set({
-        'id': docRef.id,
-        'status': 0, // draft
-        'sender_id': ownerId,
-        'receiver_id': _uid,
-        'pickup_address_id': senderPickup?['id'],
-        'delivery_address_id': _addressIdSelected,
-        'item_name': name,
-        'item_description': _itemNoteCtrl.text.trim(),
-        'created_at': now,
-        'updated_at': now,
-        'sender_snapshot': {
+      await _shipApi.createDraft(
+        senderId: ownerId,
+        receiverId: _uid!,
+        pickupAddressId: senderPickup?['id'],
+        deliveryAddressId: _addressIdSelected,
+        itemName: name,
+        itemDescription: _itemNoteCtrl.text,
+        senderSnapshot: {
           'user_id': ownerId,
           'name': (SessionStore.fullname ?? '').toString(),
           'phone': (SessionStore.phoneId ?? '').toString(),
@@ -548,19 +499,18 @@ class _HomeUserState extends State<HomeUser> {
           'pickup_address_id': senderPickup?['id'],
           'pickup_address': senderPickupNorm,
         },
-        'receiver_snapshot': {
+        receiverSnapshot: {
           'user_id': _uid,
           'name': (_user?['name'] ?? _user?['fullname'] ?? '').toString(),
           'phone': (_user?['phone'] ?? '').toString(),
           'photo_url': receiverPhotoUrl,
           'address_id': _addressIdSelected,
         },
-        'delivery_address_snapshot': receiverAddrNorm,
-        'last_photo_url': photoUrl,
-        'last_photo_uploaded_at': photoUrl.isEmpty ? null : now,
-      });
+        deliveryAddressSnapshot: receiverAddrNorm,
+        firstPhotoFile: _photoFile,
+      );
 
-      _toast('เพิ่มเป็นรายการร่าง (draft) แล้ว', success: true);
+      _toast('เพิ่มเป็นรายการร่างแล้ว', success: true);
 
       setState(() {
         _itemNameCtrl.clear();
@@ -588,33 +538,14 @@ class _HomeUserState extends State<HomeUser> {
     setState(() => _sendingAll = true);
 
     try {
-      final fs = FirebaseFirestore.instance;
+      final updated = await _shipApi.sendAllDrafts(senderId: ownerId);
 
-      // ดึง draft ทั้งหมดของผู้ส่ง
-      final q = await fs
-          .collection('shipments')
-          .where('sender_id', isEqualTo: ownerId)
-          .where('status', isEqualTo: 0) // draft
-          .get();
-
-      if (q.docs.isEmpty) {
+      if (updated == 0) {
         _toast('ไม่มีรายการร่างที่รอส่ง');
-        return;
+      } else {
+        _toast('ยืนยันส่งทั้งหมดสำเร็จ ($updated รายการ)', success: true);
       }
 
-      final now = FieldValue.serverTimestamp();
-      final batch = fs.batch();
-
-      for (final d in q.docs) {
-        batch.update(d.reference, {
-          'status': 1, // ยืนยันส่ง
-          'updated_at': now,
-        });
-      }
-
-      await batch.commit();
-
-      _toast('ยืนยันส่งทั้งหมดสำเร็จ (${q.docs.length} รายการ)', success: true);
       await _refreshCartCount();
     } catch (e) {
       _toast('ส่งทั้งหมดล้มเหลว: $e');
@@ -631,14 +562,8 @@ class _HomeUserState extends State<HomeUser> {
       if (mounted) setState(() => _cartCount = 0);
       return;
     }
-    final fs = FirebaseFirestore.instance;
-    final q = await fs
-        .collection('shipments')
-        .where('sender_id', isEqualTo: ownerId)
-        .where('status', isEqualTo: 0) // draft
-        .get();
-
-    if (mounted) setState(() => _cartCount = q.docs.length);
+    final n = await _shipApi.countDrafts(senderId: ownerId);
+    if (mounted) setState(() => _cartCount = n);
   }
 
   // ===== lifecycle =====
@@ -721,7 +646,7 @@ class _HomeUserState extends State<HomeUser> {
                     duration: const Duration(milliseconds: 200),
                     child: _uid == null
                         ? _emptyCard(
-                            'กรอกเบอร์แล้วกดแว่นขยายเพื่อค้นหาผู้รับ',
+                            'กรอกเบอร์แล้วกดไอคอนแว่นขยายเพื่อค้นหาผู้รับ',
                           )
                         : Column(
                             key: const ValueKey('receiver'),
@@ -748,7 +673,7 @@ class _HomeUserState extends State<HomeUser> {
                         : 'สร้างคำสั่งส่งสินค้า 1 รายการ',
                     onPressed: _creating ? () {} : _createShipment,
                   ),
-                  constSizedBox10(),
+                  const SizedBox(height: 10),
                   _secondaryButton(
                     icon: _addingToCart
                         ? Icons.hourglass_empty
@@ -770,6 +695,13 @@ class _HomeUserState extends State<HomeUser> {
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(
                           color: _orangeSoft.withOpacity(.9), width: 1),
+                      boxShadow: const [
+                        BoxShadow(
+                          blurRadius: 10,
+                          offset: Offset(0, 6),
+                          color: Color(0x12000000),
+                        )
+                      ],
                     ),
                     child: Row(
                       children: [
@@ -779,6 +711,8 @@ class _HomeUserState extends State<HomeUser> {
                         Expanded(
                           child: Text(
                             'คิวร่างรอยืนยัน: $_cartCount รายการ',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
                                 fontWeight: FontWeight.w800,
                                 color: Colors.black87),
@@ -826,8 +760,6 @@ class _HomeUserState extends State<HomeUser> {
     );
   }
 
-  // ---------------- UI PARTS ----------------
-
   Widget _sectionChip({required IconData icon, required String text}) {
     return Align(
       alignment: Alignment.centerLeft,
@@ -846,9 +778,13 @@ class _HomeUserState extends State<HomeUser> {
           children: [
             Icon(icon, color: Colors.white, size: 18),
             const SizedBox(width: 6),
-            Text(text,
-                style: const TextStyle(
-                    color: Colors.white, fontWeight: FontWeight.w800)),
+            Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                  color: Colors.white, fontWeight: FontWeight.w800),
+            ),
           ],
         ),
       ),
@@ -879,7 +815,14 @@ class _HomeUserState extends State<HomeUser> {
       children: [
         Icon(icon, color: _orange, size: 20),
         const SizedBox(width: 6),
-        Text(text, style: const TextStyle(fontWeight: FontWeight.w800)),
+        Expanded(
+          child: Text(
+            text,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w800),
+          ),
+        ),
       ],
     );
   }
@@ -893,14 +836,28 @@ class _HomeUserState extends State<HomeUser> {
         filled: true,
         fillColor: Colors.white,
         prefixIcon: const Icon(Icons.phone_outlined),
-        suffixIcon: IconButton(
-          onPressed: _searching ? null : _searchByPhone,
-          icon: _searching
-              ? const SizedBox(
-                  height: 18,
-                  width: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2))
-              : const Icon(Icons.search),
+        suffixIcon: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (_phoneCtrl.text.isNotEmpty)
+              IconButton(
+                tooltip: 'ล้าง',
+                onPressed: () {
+                  _phoneCtrl.clear();
+                  setState(() {});
+                },
+                icon: const Icon(Icons.clear),
+              ),
+            IconButton(
+              onPressed: _searching ? null : _searchByPhone,
+              icon: _searching
+                  ? const SizedBox(
+                      height: 18,
+                      width: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.search),
+            ),
+          ],
         ),
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
         enabledBorder: OutlineInputBorder(
@@ -912,6 +869,7 @@ class _HomeUserState extends State<HomeUser> {
           borderSide: const BorderSide(color: _orange, width: 2),
         ),
       ),
+      onChanged: (_) => setState(() {}),
       onSubmitted: (_) => _searchByPhone(),
     );
   }
@@ -950,8 +908,14 @@ class _HomeUserState extends State<HomeUser> {
             Text('แนบรูปสินค้า *',
                 style: TextStyle(fontWeight: FontWeight.w700)),
             SizedBox(width: 6),
-            Text('(สำหรับคนขับ: “อะไรต้องระวัง?”)',
-                style: TextStyle(fontSize: 11, color: _orange)),
+            Flexible(
+              child: Text(
+                '(สำหรับคนขับ: อธิบายว่า “อะไรต้องระวัง?” ในรายละเอียด)',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 11, color: _orange),
+              ),
+            ),
           ],
         ),
         const SizedBox(height: 8),
@@ -965,11 +929,11 @@ class _HomeUserState extends State<HomeUser> {
       onTap: _pickPhoto,
       borderRadius: BorderRadius.circular(12),
       child: Ink(
-        height: 140,
+        height: 160,
         decoration: BoxDecoration(
-          color: _orangeSoft.withOpacity(.35),
+          color: _pillBg,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: _orangeSoft, width: 1.2),
+          border: Border.all(color: _orangeSoft, width: 1.4),
         ),
         child: _photoFile == null
             ? Center(
@@ -979,7 +943,7 @@ class _HomeUserState extends State<HomeUser> {
                     Icon(Icons.add_photo_alternate_outlined,
                         size: 40, color: Colors.black54),
                     SizedBox(height: 6),
-                    Text('เพิ่มรูป',
+                    Text('แตะเพื่อเพิ่มรูป',
                         style: TextStyle(fontWeight: FontWeight.w700)),
                   ],
                 ),
@@ -1000,6 +964,7 @@ class _HomeUserState extends State<HomeUser> {
   Widget _emptyCard(String text) {
     return _card(
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
             padding: const EdgeInsets.all(8),
@@ -1010,35 +975,50 @@ class _HomeUserState extends State<HomeUser> {
             child: const Icon(Icons.info_outline, color: _orange),
           ),
           const SizedBox(width: 10),
-          Expanded(child: Text(text)),
+          Expanded(
+            child: Text(
+              text,
+              style: const TextStyle(height: 1.25),
+            ),
+          ),
         ],
       ),
     );
   }
 
   Widget _receiverCard(Map<String, dynamic>? user, String uid) {
-    final name = (user?['name'] ?? user?['fullname'] ?? '-').toString();
+    final name = (user?['name'] ?? '-').toString();
     final phone = (user?['phone'] ?? '-').toString();
-    final avatar = (user?['photoUrl'] ?? user?['avatarUrl'] ?? '').toString();
+
+    // ดึง URL ของรูปล่าสุดจาก avatarUrl หรือ photoUrl
+    final avatarUrl =
+        (user?['avatarUrl'] ?? user?['photoUrl'] ?? '').toString();
 
     return _card(
       child: Row(
         children: [
           CircleAvatar(
             radius: 28,
-            backgroundImage: avatar.isNotEmpty ? NetworkImage(avatar) : null,
-            child: avatar.isEmpty ? const Icon(Icons.person) : null,
+            backgroundColor: const Color(0xFFF1F1F1),
+            backgroundImage:
+                avatarUrl.isNotEmpty ? NetworkImage(avatarUrl) : null,
+            child: avatarUrl.isEmpty ? const Icon(Icons.person) : null,
           ),
           const SizedBox(width: 12),
           Expanded(
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(name, style: const TextStyle(fontWeight: FontWeight.w800)),
-              const SizedBox(height: 2),
-              Text(phone, style: const TextStyle(color: Colors.grey)),
-              Text('UID: $uid',
-                  style: const TextStyle(color: Colors.grey, fontSize: 12)),
-            ]),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 2),
+                Text(phone, style: const TextStyle(color: Colors.grey)),
+              ],
+            ),
           ),
         ],
       ),
@@ -1046,8 +1026,8 @@ class _HomeUserState extends State<HomeUser> {
   }
 
   Widget _pickupCard(Map<String, dynamic> a) {
-    final label = (a['label'] ?? 'ที่อยู่').toString();
-    final detail = (a['detail_normalized'] ?? a['detail'] ?? '').toString();
+    final label = (a['label']).toString();
+    final detail = (a['detail_normalized']).toString();
     final phone = (a['phone'] ?? '').toString();
 
     return _card(
@@ -1061,9 +1041,11 @@ class _HomeUserState extends State<HomeUser> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontWeight: FontWeight.w800)),
                 const SizedBox(height: 4),
-                Text(detail),
+                Text(detail, style: const TextStyle(height: 1.3)),
                 if (phone.isNotEmpty) ...[
                   const SizedBox(height: 4),
                   Text(phone, style: const TextStyle(color: Colors.grey)),
@@ -1084,10 +1066,9 @@ class _HomeUserState extends State<HomeUser> {
     if (a.isEmpty) return const SizedBox.shrink();
 
     final norm = _normalizeAddressMap(a);
-    final label = (norm['label'] ?? 'ที่อยู่').toString();
-    final detail =
-        (norm['detail_normalized'] ?? norm['detail'] ?? '').toString();
-    final phone = (norm['phone'] ?? '').toString();
+    final label = (norm['label']).toString();
+    final detail = (norm['detail_normalized']).toString();
+    final phone = (norm['phone']).toString();
 
     return _card(
       child: Row(
@@ -1099,14 +1080,25 @@ class _HomeUserState extends State<HomeUser> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text('ที่อยู่ผู้รับ (หลัก)',
-                    style:
-                        TextStyle(fontWeight: FontWeight.w900, color: _orange)),
-                const SizedBox(height: 6),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: _pillBg,
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: _orangeSoft, width: 1.2),
+                  ),
+                  child: const Text('ที่อยู่ผู้รับ (หลัก)',
+                      style: TextStyle(
+                          color: _orange, fontWeight: FontWeight.w900)),
+                ),
+                const SizedBox(height: 8),
                 Text(label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontWeight: FontWeight.w800)),
                 const SizedBox(height: 4),
-                Text(detail),
+                Text(detail, style: const TextStyle(height: 1.3)),
                 if (phone.isNotEmpty) ...[
                   const SizedBox(height: 4),
                   Text(phone, style: const TextStyle(color: Colors.grey)),
@@ -1129,7 +1121,7 @@ class _HomeUserState extends State<HomeUser> {
       child: ElevatedButton.icon(
         onPressed: onPressed,
         icon: Icon(icon),
-        label: Text(text),
+        label: Text(text, maxLines: 1, overflow: TextOverflow.ellipsis),
         style: ElevatedButton.styleFrom(
           backgroundColor: _orange,
           foregroundColor: Colors.white,
@@ -1152,9 +1144,12 @@ class _HomeUserState extends State<HomeUser> {
       child: OutlinedButton.icon(
         onPressed: onPressed,
         icon: Icon(icon, color: _orange),
-        label: Text(text,
-            style:
-                const TextStyle(color: _orange, fontWeight: FontWeight.w700)),
+        label: Text(
+          text,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: _orange, fontWeight: FontWeight.w700),
+        ),
         style: OutlinedButton.styleFrom(
           side: const BorderSide(color: _orange, width: 1.5),
           shape:
@@ -1164,6 +1159,4 @@ class _HomeUserState extends State<HomeUser> {
       ),
     );
   }
-
-  Widget constSizedBox10() => const SizedBox(height: 10);
 }
