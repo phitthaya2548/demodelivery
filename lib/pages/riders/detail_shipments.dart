@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:deliverydomo/pages/riders/map_rider.dart';
+import 'package:deliverydomo/pages/riders/widgets/bottom.dart';
 import 'package:deliverydomo/pages/sesstion.dart';
 import 'package:deliverydomo/services/firebase_rider_showworl.dart';
 import 'package:deliverydomo/services/firebase_shipment_detail_rider.dart';
@@ -98,6 +100,7 @@ class _DetailShipmentsState extends State<DetailShipments>
       Get.back();
       Get.snackbar('สำเร็จ', 'รับงานเรียบร้อย',
           snackPosition: SnackPosition.BOTTOM);
+      Get.offAll(() => const BottomRider(initialIndex: 2));
     } catch (e) {
       Get.snackbar('รับงานไม่สำเร็จ', '$e',
           snackPosition: SnackPosition.BOTTOM,
@@ -243,8 +246,10 @@ class _DetailShipmentsState extends State<DetailShipments>
                                   zoomControlsEnabled: true,
                                   scrollGesturesEnabled: true,
                                   zoomGesturesEnabled: true,
-                                  minMaxZoomPreference:
-                                      MinMaxZoomPreference(10, 20),
+                                  myLocationButtonEnabled: true,
+                                  myLocationEnabled: true,
+                                  mapToolbarEnabled: true,
+                                  mapType: MapType.normal,
                                 ),
                               ),
                               const SizedBox(height: 24),

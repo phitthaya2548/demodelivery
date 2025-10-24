@@ -163,37 +163,33 @@ class FirestoreAuthRepo {
     return (false, null);
   }
 
-  bool _verifyPassword({
-    required Map<String, dynamic> user,
-    required Map<String, dynamic> rider,
+  // --- 4) [REFACTORED] ---
+  /// ตรวจสอบรหัสผ่านสำหรับ entity เดียว (user หรือ rider)
+  bool _verifyPasswordForEntity({
+    required Map<String, dynamic> entity,
     required String pass,
     required String phone,
   }) {
-    bool passOk = false;
-
-    if (user.isNotEmpty) {
-      final uStoredHash =
-          _pick<String>(user, ['passwordHash', 'password_hash']) ?? '';
-      final uStoredPlain = _pick<String>(user, ['password']) ?? '';
-      passOk = (uStoredHash.isNotEmpty &&
-              uStoredHash == _hashWithPhone(pass, phone)) ||
-          (uStoredHash.isNotEmpty && uStoredHash == _sha256(pass)) ||
-          (uStoredPlain.isNotEmpty && uStoredPlain == pass);
+    if (entity.isEmpty) {
+      return false;
     }
 
-    if (!passOk && rider.isNotEmpty) {
-      final rHash =
-          _pick<String>(rider, ['passwordHash', 'password_hash']) ?? '';
-      final rPlain = _pick<String>(rider, ['password']) ?? '';
-      passOk = (rHash.isNotEmpty && rHash == _hashWithPhone(pass, phone)) ||
-          (rHash.isNotEmpty && rHash == _sha256(pass)) ||
-          (rPlain.isNotEmpty && rPlain == pass);
-    }
+    final storedHash =
+        _pick<String>(entity, ['passwordHash', 'password_hash']) ?? '';
+    final storedPlain = _pick<String>(entity, ['password']) ?? '';
 
-    return passOk;
+    // The three verification methods
+    final bool hashWithPhoneMatches =
+        (storedHash.isNotEmpty && storedHash == _hashWithPhone(pass, phone));
+    final bool genericHashMatches =
+        (storedHash.isNotEmpty && storedHash == _sha256(pass));
+    final bool plainTextMatches =
+        (storedPlain.isNotEmpty && storedPlain == pass);
+
+    return hashWithPhoneMatches || genericHashMatches || plainTextMatches;
   }
+  // -------------------------
 
-  // checklogin
   Future<AuthResult> loginWithPhonePassword({
     required String phoneInput,
     required String password,
@@ -235,46 +231,82 @@ class FirestoreAuthRepo {
       );
     }
 
+    // Get user data
     final userSnap = await _getUserSnapByUidOrPhone(uid, phone);
     final user = userSnap?.data() ?? {};
 
+    // Get rider data
     final (isRider, riderSnap) = await _findRiderByUidOrPhone(uid, phone);
     final rider = riderSnap?.data() ?? {};
-    final passOk = _verifyPassword(
-      user: user,
-      rider: rider,
+
+    // --- 5) [REFACTORED LOGIC] ---
+
+    // 5.1) ตรวจสอบรหัสผ่านสำหรับ User ก่อน
+    final passOkForUser = _verifyPasswordForEntity(
+      entity: user,
       pass: password.trim(),
       phone: phone,
     );
-    if (!passOk) {
+
+    if (passOkForUser) {
+      // ถ้าตรง ให้ล็อกอินเป็น USER
+      final role = 'USER';
+      final base = user;
+      final name = _pick<String>(base, ['name', 'fullname']) ??
+          _pick<String>(user, ['name', 'fullname']) ??
+          '';
+      final avatarUrl = _pick<String>(base, ['avatarUrl', 'photoUrl']) ??
+          _pick<String>(user, ['avatarUrl', 'photoUrl']) ??
+          '';
+
       return AuthResult(
-        ok: false,
+        ok: true,
         uid: uid,
-        role: isRider ? 'RIDER' : 'USER',
+        role: role,
         phone: phone,
-        name: '',
-        avatarUrl: '',
-        error: 'รหัสผ่านไม่ถูกต้อง',
+        name: name,
+        avatarUrl: avatarUrl,
       );
     }
 
-    
-    final role = isRider ? 'RIDER' : 'USER';
-    final base = isRider && rider.isNotEmpty ? rider : user;
-    final name = _pick<String>(base, ['name', 'fullname']) ??
-        _pick<String>(user, ['name', 'fullname']) ??
-        '';
-    final avatarUrl = _pick<String>(base, ['avatarUrl', 'photoUrl']) ??
-        _pick<String>(user, ['avatarUrl', 'photoUrl']) ??
-        '';
-
-    return AuthResult(
-      ok: true,
-      uid: uid,
-      role: role,
+    // 5.2) ถ้ารหัส User ไม่ตรง ค่อยมาตรวจรหัส Rider
+    final passOkForRider = _verifyPasswordForEntity(
+      entity: rider,
+      pass: password.trim(),
       phone: phone,
-      name: name,
-      avatarUrl: avatarUrl,
     );
+
+    if (passOkForRider) {
+      // ถ้ารหัส Rider ตรง ให้ล็อกอินเป็น RIDER
+      final role = 'RIDER';
+      final base = rider;
+      final name = _pick<String>(base, ['name', 'fullname']) ??
+          _pick<String>(rider, ['name', 'fullname']) ??
+          '';
+      final avatarUrl = _pick<String>(base, ['avatarUrl', 'photoUrl']) ??
+          _pick<String>(rider, ['avatarUrl', 'photoUrl']) ??
+          '';
+
+      return AuthResult(
+        ok: true,
+        uid: uid,
+        role: role,
+        phone: phone,
+        name: name,
+        avatarUrl: avatarUrl,
+      );
+    }
+
+    // 5.3) ถ้าไม่ตรงทั้งคู่
+    return AuthResult(
+      ok: false,
+      uid: uid,
+      role: 'USER',
+      phone: phone,
+      name: '',
+      avatarUrl: '',
+      error: 'รหัสผ่านไม่ถูกต้อง',
+    );
+    // ----------------------------
   }
 }
