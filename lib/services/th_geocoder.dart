@@ -1,12 +1,12 @@
-// lib/services/th_geocoder.dart
 import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:http/http.dart' as http;
 
 class ThaiGeocoder {
   ThaiGeocoder({this.googleApiKey});
-  final String? googleApiKey; // ใส่คีย์หรือปล่อย null ได้ (จะข้าม fallback)
+  final String? googleApiKey;
 
   Future<({double? lat, double? lng})> geocode(String address) async {
     Future<({double? lat, double? lng})> _system(String q) async {
@@ -22,7 +22,6 @@ class ThaiGeocoder {
       return (lat: null, lng: null);
     }
 
-    // 1) ลองหลายรูปแบบด้วย system geocoder
     final tries = <String>[
       address,
       '$address ประเทศไทย',
@@ -34,7 +33,6 @@ class ThaiGeocoder {
       if (r.lat != null) return r;
     }
 
-    // 2) Fallback: Google Geocoding REST ถ้ามีคีย์
     if (googleApiKey != null && googleApiKey!.isNotEmpty) {
       final url = Uri.https('maps.googleapis.com', '/maps/api/geocode/json', {
         'address': address,
@@ -57,7 +55,8 @@ class ThaiGeocoder {
               return (lat: lat, lng: lng);
             }
           } else {
-            debugPrint('[geo] google status=$status msg=${data['error_message']}');
+            debugPrint(
+                '[geo] google status=$status msg=${data['error_message']}');
           }
         } else {
           debugPrint('[geo] http=${res.statusCode} body=${res.body}');
@@ -67,7 +66,6 @@ class ThaiGeocoder {
       }
     }
 
-    // 3) ไม่พบจริง ๆ
     return (lat: null, lng: null);
   }
 }

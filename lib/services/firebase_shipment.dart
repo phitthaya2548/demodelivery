@@ -145,6 +145,49 @@ class ShipmentApi {
     return updated;
   }
 
+  Stream<QuerySnapshot<Map<String, dynamic>>> watchDrafts({
+    required String senderId,
+    int limit = 100,
+  }) {
+    return _fs
+        .collection('shipments')
+        .where('sender_id', isEqualTo: senderId)
+        .where('status', isEqualTo: 0)
+        .limit(limit)
+        .snapshots();
+  }
+
+  Future<bool> deleteIfDraft({
+    required String shipmentId,
+    required String ownerId,
+  }) async {
+    final docRef = _ref(shipmentId);
+    final doc = await docRef.get();
+    if (!doc.exists) return false;
+
+    final data = doc.data()!;
+    final isOwner = (data['sender_id'] ?? '') == ownerId;
+    final isDraft = (data['status'] ?? 0) == 0;
+
+    if (!isOwner || !isDraft) return false;
+
+    // พยายามลบไฟล์ทั้งหมดในโฟลเดอร์ของ shipment นี้
+    try {
+      final folderRef = _st.ref('shipments/$shipmentId');
+      final listed = await folderRef.listAll();
+      // ลบไฟล์ (ไม่จำเป็นต้องรอเป็นชุด batch ก็ได้)
+      for (final item in listed.items) {
+        try {
+          await item.delete();
+        } catch (_) {/* กลืน error ไฟล์เดี่ยว */}
+      }
+      // ถ้ามีโฟลเดอร์ย่อย (ไม่น่ามีในเคสนี้) ก็ข้ามไป
+    } catch (_) {/* กลืน error โฟลเดอร์ */}
+    // ลบเอกสาร Firestore
+    await docRef.delete();
+    return true;
+  }
+
   Future<ShipmentCreateResult> _createShipment({
     required int status,
     required String senderId,

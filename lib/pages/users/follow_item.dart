@@ -313,21 +313,31 @@ class _FollowItemState extends State<FollowItem>
                             ),
                           const SizedBox(height: 16),
 
-                          // Map Card
+                          // Map Card (แสดงเฉพาะสถานะ < 4)
                           if (status < 4)
                             StreamBuilder<List<Map<String, dynamic>>>(
                               stream: _allShipmentsStream,
                               builder: (context, shipmentsSnap) {
                                 final shipments = shipmentsSnap.data ?? [];
 
+                                // ✅ เลือกปลายทางของเส้นทางตามสถานะ
+                                final LatLng dest = (status >=
+                                        3) // หลังรับของแล้ว → ไปผู้รับ
+                                    ? LatLng(latReceiver, lngReceiver)
+                                    : LatLng(latSender,
+                                        lngSender); // ยังไม่รับของ → ไปผู้ส่ง
+
                                 return FutureBuilder<Map<String, dynamic>>(
                                   future: _getOSRM(
                                     LatLng(riderLat, riderLng),
-                                    LatLng(latSender, lngSender),
+                                    dest,
                                   ),
                                   builder: (context, osrmSnap) {
                                     final osrmPoints =
                                         osrmSnap.data?['points'] ?? <LatLng>[];
+                                    final routeLabel = (status >= 3)
+                                        ? 'เส้นทางไปผู้รับ'
+                                        : 'เส้นทางไปผู้ส่ง';
                                     return _mapCard(
                                       riderLat: riderLat,
                                       riderLng: riderLng,
@@ -337,6 +347,9 @@ class _FollowItemState extends State<FollowItem>
                                       receiverLng: lngReceiver,
                                       points: osrmPoints,
                                       shipments: shipments,
+                                      currentShipmentId:
+                                          widget.shipmentId, // กันหมุดซ้ำ
+                                      routeLabel: routeLabel, // ป้ายบอกทาง
                                     );
                                   },
                                 );
@@ -478,6 +491,7 @@ class _FollowItemState extends State<FollowItem>
     required List<LatLng> points,
     required List<Map<String, dynamic>> shipments,
     String? currentShipmentId,
+    String? routeLabel, // ✅ เพิ่มพารามิเตอร์เพื่อโชว์ป้ายเส้นทาง
     bool myLocationEnabled = true,
   }) {
     final markers = <Marker>{};
@@ -632,6 +646,7 @@ class _FollowItemState extends State<FollowItem>
                 WidgetsBinding.instance.addPostFrameCallback((_) => fitAll());
               },
             ),
+            // ปุ่ม fitAll
             Positioned(
               top: 16,
               right: 16,
@@ -647,6 +662,43 @@ class _FollowItemState extends State<FollowItem>
                 ),
               ),
             ),
+            // ✅ ป้ายแสดงปลายทางเส้นทาง
+            if ((routeLabel ?? '').isNotEmpty)
+              Positioned(
+                top: 16,
+                left: 16,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(10),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.08),
+                        blurRadius: 8,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.route, size: 18, color: _primaryOrange),
+                      const SizedBox(width: 8),
+                      Text(
+                        routeLabel!,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13,
+                          color: Colors.black87,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            // Legend
             Positioned(
               left: 16,
               bottom: 16,
@@ -713,7 +765,6 @@ class _FollowItemState extends State<FollowItem>
     }
   }
 
-  /// ห่อการ์ด: ดูรูปแบบเรียลไทม์ + fallback
   Widget _partyCardFromUserDoc({
     required String uid,
     required String phone,

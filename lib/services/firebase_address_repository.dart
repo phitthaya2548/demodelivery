@@ -59,10 +59,10 @@ class AddressRepository {
     await batch.commit();
   }
 
-  /// เพิ่มที่อยู่ใหม่ (รองรับใส่ lat/lng/GeoPoint ถ้ามี) และถ้าขอตั้ง default ก็จัดให้
+  
   Future<void> addAddress({
     required String uid,
-    required Map<String, dynamic> payload, // แปลงมาจาก model แล้ว
+    required Map<String, dynamic> payload,
     required bool setDefault,
   }) async {
     final col = _fs.collection('addressuser');

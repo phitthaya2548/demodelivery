@@ -72,7 +72,7 @@ class UserRepository {
     try {
       await ref.update(data);
     } catch (_) {
-      await ref.set(data, SetOptions(merge: true)); // กันกรณี doc ยังไม่มี
+      await ref.set(data, SetOptions(merge: true)); 
     }
 
     if (phone != null && phone.trim().isNotEmpty) {

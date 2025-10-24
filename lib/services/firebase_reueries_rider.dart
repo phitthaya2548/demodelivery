@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 
-/// ===== Top-level models =====
+
 
 class GeoCoord {
   final double lat;
@@ -25,7 +25,7 @@ class ResolvedShipment {
   final String senderAddressText;
   final GeoCoord? senderGeo;
 
-  // Receiver
+
   final String receiverName;
   final String receiverPhone;
   final String receiverAddressText;
@@ -48,9 +48,6 @@ class ResolvedShipment {
   });
 }
 
-/// ============================================================================
-/// Repository ส่วนกลางสำหรับ “ไรเดอร์” และ “ชิพเมนต์” + Avatar (ล่าสุดจริง)
-/// ============================================================================
 
 class FirebaseRiderRepository {
   FirebaseRiderRepository({
@@ -285,9 +282,6 @@ class FirebaseRiderRepository {
     });
   }
 
-  // ---------------------------------------------------------------------------
-  // Photos (Shipment_Photo) - reads
-  // ---------------------------------------------------------------------------
   Stream<List<QueryDocumentSnapshot<Map<String, dynamic>>>>
       watchShipmentPhotos({
     required String shipmentId,
@@ -355,13 +349,13 @@ class FirebaseRiderRepository {
     required int toStatus,
     File? proofFile,
   }) async {
-    // 1) อัปโหลดรูปสถานะ (ถ้ามี) — *อย่า* แตะ last_photo_url
+
     String? proofUrl;
     if (proofFile != null) {
       proofUrl = await uploadProofPhoto(
         shipmentId: shipmentId,
         file: proofFile,
-        updateFields: false, // เราจะอัปเดตฟิลด์หลักใน tx เดียวกัน
+        updateFields: false,
         riderId: riderId,
         currentStatus: toStatus,
       );
@@ -497,12 +491,8 @@ class FirebaseRiderRepository {
     return url;
   }
 
-  // ---------------------------------------------------------------------------
-  // User helpers (Avatar) — ดึง “ล่าสุดจริง”
-  // ---------------------------------------------------------------------------
-
-  // ผูก cache กับเวอร์ชัน (เลือกใช้ได้; จะไม่ค้างรูปเก่า)
-  final Map<String, String> _avatarCache = {}; // key = 'uid:<id>:v:<ver>'
+ 
+  final Map<String, String> _avatarCache = {}; 
 
   Future<DocumentSnapshot<Map<String, dynamic>>> _getUserDoc(
     String uid, {
@@ -546,7 +536,7 @@ class FirebaseRiderRepository {
     return _urlWithVersion(url, now);
   }
 
-  /// ดึง avatar ตาม uid (one-shot; แนบ ?v=avatarVersion)
+
   Future<String> fetchUserPhotoByUid(String uid,
       {bool forceServer = false}) async {
     if (uid.isEmpty) return '';
@@ -558,7 +548,6 @@ class FirebaseRiderRepository {
       final ver = m[kAvatarVersionField];
       final finalUrl = _urlWithVersion(url, ver);
 
-      // แคชแบบ versioned
       _avatarCache['uid:$uid:v:${ver ?? ''}'] = finalUrl;
       return finalUrl;
     } catch (_) {
@@ -595,7 +584,7 @@ class FirebaseRiderRepository {
         return _urlWithVersion(url, ver);
       }
 
-      // 3) legacy: users/<docId = phone>
+
       final legacy = await _fs
           .collection('users')
           .doc(p)
@@ -621,7 +610,6 @@ class FirebaseRiderRepository {
     });
   }
 
-  /// Stream: avatar เด้งสดด้วย phone (normalize แล้ว)
   Stream<String> watchUserAvatarByPhone(String phone) {
     final p = _normalizePhone(phone);
     if (p.isEmpty) return const Stream.empty();
@@ -635,7 +623,6 @@ class FirebaseRiderRepository {
     });
   }
 
-  /// รวม: หา avatar สด โดย uid > phone
   Future<String> findLiveUserAvatar(
       {String? uid, String? phone, bool forceServer = false}) async {
     try {

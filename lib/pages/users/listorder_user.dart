@@ -1,4 +1,4 @@
-// lib/pages/users/listorder_user.dart
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:deliverydomo/pages/riders/widgets/appbar.dart';
 import 'package:deliverydomo/pages/sesstion.dart';
@@ -672,7 +672,7 @@ class _OrderList extends StatelessWidget {
                                   ),
                                 ),
 
-                                // Body
+                                
                                 const Padding(
                                   padding: EdgeInsets.fromLTRB(20, 14, 20, 6),
                                   child: Text(
@@ -685,7 +685,7 @@ class _OrderList extends StatelessWidget {
                                 ),
                                 const SizedBox(height: 8),
 
-                                // Actions
+                                
                                 Padding(
                                   padding:
                                       const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -1020,7 +1020,7 @@ class _OrderCard extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          // ชื่อสินค้า + ไอคอนแบบไล่เฉด
+                          
                           Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
@@ -1067,7 +1067,7 @@ class _OrderCard extends StatelessWidget {
                             ],
                           ),
 
-                          // คำอธิบายสินค้า (ถ้ามี) แบบการ์ดบาง ๆ
+                          
                           if (itemDes.isNotEmpty) ...[
                             const SizedBox(height: 8),
                             Container(
@@ -1194,7 +1194,7 @@ class _OrderCard extends StatelessWidget {
                   ),
                 ),
 
-                // Rider Info
+                
                 if (riderName.isNotEmpty ||
                     riderPhone.isNotEmpty ||
                     riderPlate.isNotEmpty) ...[
@@ -1307,7 +1307,7 @@ class _OrderCard extends StatelessWidget {
 
                 const SizedBox(height: 16),
 
-                // Follow Button
+                
                 Container(
                   width: double.infinity,
                   height: 52,

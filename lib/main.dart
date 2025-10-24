@@ -1,5 +1,4 @@
-// Flutter & Firebase
-// Pages
+
 import 'package:deliverydomo/pages/login.dart';
 import 'package:deliverydomo/pages/riders/widgets/bottom.dart';
 import 'package:deliverydomo/pages/sesstion.dart';

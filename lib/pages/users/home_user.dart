@@ -510,7 +510,7 @@ class _HomeUserState extends State<HomeUser> {
         firstPhotoFile: _photoFile,
       );
 
-      _toast('เพิ่มเป็นรายการร่างแล้ว', success: true);
+      _toast('เพิ่มเป็นรายการสินค้าแล้ว', success: true);
 
       setState(() {
         _itemNameCtrl.clear();
@@ -551,6 +551,51 @@ class _HomeUserState extends State<HomeUser> {
       _toast('ส่งทั้งหมดล้มเหลว: $e');
     } finally {
       if (mounted) setState(() => _sendingAll = false);
+    }
+  }
+
+  // ===== ลบร่างเดี่ยว (UI) =====
+  Future<void> _deleteDraft(String shipmentId) async {
+    final ownerId =
+        (SessionStore.userId ?? SessionStore.phoneId ?? '').toString();
+    if (ownerId.isEmpty) {
+      _toast('ไม่พบ session ของผู้ส่ง');
+      return;
+    }
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('ลบรายการร่าง'),
+        content: const Text('ต้องการลบรายการร่างนี้หรือไม่?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('ยกเลิก'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('ลบ'),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+
+    try {
+      final done = await _shipApi.deleteIfDraft(
+        shipmentId: shipmentId,
+        ownerId: ownerId,
+      );
+      if (done) {
+        _toast('ลบรายการร่างแล้ว', success: true);
+        await _refreshCartCount();
+      } else {
+        _toast('ลบไม่ได้: ไม่ใช่ของคุณหรือไม่อยู่สถานะร่าง');
+      }
+    } catch (e) {
+      _toast('ลบล้มเหลว: $e');
     }
   }
 
@@ -670,7 +715,7 @@ class _HomeUserState extends State<HomeUser> {
                         : Icons.play_arrow_rounded,
                     text: _creating
                         ? 'กำลังสร้างคำสั่ง...'
-                        : 'สร้างคำสั่งส่งสินค้า 1 รายการ',
+                        : 'สร้างคำสั่งส่งสินค้ารายการเดียว',
                     onPressed: _creating ? () {} : _createShipment,
                   ),
                   const SizedBox(height: 10),
@@ -680,7 +725,7 @@ class _HomeUserState extends State<HomeUser> {
                         : Icons.add_shopping_cart_outlined,
                     text: _addingToCart
                         ? 'กำลังเพิ่มเป็นร่าง...'
-                        : 'เพิ่มรายการเป็นร่าง (เก็บใน shipments)',
+                        : 'เพิ่มรายการในงาน',
                     onPressed: _addingToCart ? () {} : _addToCart,
                   ),
 
@@ -710,7 +755,7 @@ class _HomeUserState extends State<HomeUser> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            'คิวร่างรอยืนยัน: $_cartCount รายการ',
+                            'งานรอยืนยัน: $_cartCount รายการ',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
@@ -751,6 +796,14 @@ class _HomeUserState extends State<HomeUser> {
                       ],
                     ),
                   ),
+
+                  const SizedBox(height: 12),
+
+                  _sectionChip(
+                      icon: Icons.list_alt_outlined,
+                      text: 'รายการสินค้าของฉัน'),
+                  const SizedBox(height: 10),
+                  _draftListCard(),
                 ],
               ),
             ),
@@ -910,7 +963,7 @@ class _HomeUserState extends State<HomeUser> {
             SizedBox(width: 6),
             Flexible(
               child: Text(
-                '(สำหรับคนขับ: อธิบายว่า “อะไรต้องระวัง?” ในรายละเอียด)',
+                'รูปแสดงให้ไรเดอร์ดู',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(fontSize: 11, color: _orange),
@@ -1156,6 +1209,115 @@ class _HomeUserState extends State<HomeUser> {
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
           backgroundColor: Colors.white,
         ),
+      ),
+    );
+  }
+
+  // ===== รายการร่างของฉัน =====
+  Widget _draftListCard() {
+    final ownerId =
+        (SessionStore.userId ?? SessionStore.phoneId ?? '').toString();
+    if (ownerId.isEmpty) {
+      return _emptyCard('ยังไม่ได้ล็อกอินผู้ส่ง');
+    }
+
+    return _card(
+      child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        stream: _shipApi.watchDrafts(senderId: ownerId, limit: 100),
+        builder: (context, snap) {
+          if (snap.connectionState == ConnectionState.waiting) {
+            return const Padding(
+              padding: EdgeInsets.symmetric(vertical: 18),
+              child: Center(child: CircularProgressIndicator()),
+            );
+          }
+          if (!snap.hasData || snap.data!.docs.isEmpty) {
+            return const Text('ยังไม่มีรายการร่าง');
+          }
+
+          final docs = snap.data!.docs;
+
+          return ListView.separated(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: docs.length,
+            separatorBuilder: (_, __) => Divider(color: Colors.grey.shade200),
+            itemBuilder: (_, i) {
+              final d = docs[i];
+              final m = d.data();
+              final id = d.id;
+              final itemName = (m['item_name'] ?? '—').toString();
+              final receiver =
+                  ((m['receiver_snapshot']?['name']) ?? '—').toString();
+              final addrLabel =
+                  (m['delivery_address_snapshot']?['label'] ?? '').toString();
+              final lastUrl = (m['last_photo_url'] ?? '').toString();
+
+              final subtitleParts = <String>[];
+              if (receiver.isNotEmpty) subtitleParts.add('ผู้รับ: $receiver');
+              final subtitle = subtitleParts.join(' • ');
+
+              final tile = ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: (lastUrl.isEmpty)
+                    ? const CircleAvatar(child: Icon(Icons.inventory_2))
+                    : CircleAvatar(
+                        backgroundImage: NetworkImage(lastUrl),
+                      ),
+                title: Text(
+                  'ชื่อสินค้า ' + itemName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                subtitle: subtitle.isEmpty
+                    ? null
+                    : Text(subtitle,
+                        maxLines: 2, overflow: TextOverflow.ellipsis),
+                trailing: IconButton(
+                  tooltip: 'ลบรายการร่างนี้',
+                  icon: const Icon(Icons.delete_outline, color: Colors.red),
+                  onPressed: () => _deleteDraft(id),
+                ),
+              );
+
+              // รองรับปาดเพื่อลบ
+              return Dismissible(
+                key: ValueKey('draft_$id'),
+                direction: DismissDirection.endToStart,
+                background: Container(
+                  alignment: Alignment.centerRight,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.red.shade400,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.delete, color: Colors.white),
+                ),
+                confirmDismiss: (_) async {
+                  final ok = await showDialog<bool>(
+                    context: context,
+                    builder: (_) => AlertDialog(
+                      title: const Text('ลบรายการร่าง'),
+                      content: const Text('ต้องการลบรายการร่างนี้หรือไม่?'),
+                      actions: [
+                        TextButton(
+                            onPressed: () => Navigator.pop(context, false),
+                            child: const Text('ยกเลิก')),
+                        ElevatedButton(
+                            onPressed: () => Navigator.pop(context, true),
+                            child: const Text('ลบ')),
+                      ],
+                    ),
+                  );
+                  return ok == true;
+                },
+                onDismissed: (_) => _deleteDraft(id),
+                child: tile,
+              );
+            },
+          );
+        },
       ),
     );
   }

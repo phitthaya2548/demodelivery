@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:deliverydomo/pages/sesstion.dart';
 import 'package:deliverydomo/services/firebase_rider_showworl.dart';
 import 'package:deliverydomo/services/firebase_shipment_detail_rider.dart';
+import 'package:deliverydomo/services/rider_location.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 class DetailShipments extends StatefulWidget {
   const DetailShipments({Key? key}) : super(key: key);
@@ -19,8 +23,13 @@ class _DetailShipmentsState extends State<DetailShipments>
 
   final _shipmentApi = ShipmentDetailApi();
   final _riderApi = FirebaseRiderApi();
+  final _locationService = RiderLocationSender();
 
   late AnimationController _scaleController;
+  late GoogleMapController _mapController;
+
+  LatLng? _riderLocation;
+  StreamSubscription<Map<String, dynamic>?>? _locationSubscription;
 
   String get _riderId =>
       (SessionStore.userId ?? SessionStore.phoneId ?? '').toString();
@@ -32,10 +41,34 @@ class _DetailShipmentsState extends State<DetailShipments>
       duration: const Duration(milliseconds: 600),
       vsync: this,
     )..forward();
+    _subscribeToRiderLocation();
+  }
+
+  void _subscribeToRiderLocation() {
+    final riderId = _riderId;
+    if (riderId.isEmpty) return;
+
+    _locationSubscription = _locationService
+        .getShipmentLocationForRider(riderId)
+        .listen((locationData) {
+      if (locationData != null && mounted) {
+        final lat = locationData['lat'] as num?;
+        final lng = locationData['lng'] as num?;
+
+        if (lat != null && lng != null) {
+          setState(() {
+            _riderLocation = LatLng(lat.toDouble(), lng.toDouble());
+          });
+        }
+      }
+    }, onError: (e) {
+      print('Error loading rider location: $e');
+    });
   }
 
   @override
   void dispose() {
+    _locationSubscription?.cancel();
     _scaleController.dispose();
     super.dispose();
   }
@@ -133,6 +166,11 @@ class _DetailShipmentsState extends State<DetailShipments>
                 final s = d.sender;
                 final r = d.receiver;
 
+                final LatLng senderLatLng =
+                    LatLng(s.address.geo?.lat ?? 0, s.address.geo?.lng ?? 0);
+                final LatLng receiverLatLng =
+                    LatLng(r.address.geo?.lat ?? 0, r.address.geo?.lng ?? 0);
+
                 return LayoutBuilder(
                   builder: (context, constraints) {
                     return SingleChildScrollView(
@@ -159,6 +197,57 @@ class _DetailShipmentsState extends State<DetailShipments>
                               ),
                               const SizedBox(height: 24),
                               const Spacer(),
+                              SizedBox(
+                                height: 370,
+                                child: GoogleMap(
+                                  onMapCreated:
+                                      (GoogleMapController controller) {
+                                    _mapController = controller;
+                                  },
+                                  initialCameraPosition: CameraPosition(
+                                    target:
+                                        senderLatLng, // ตั้งค่าเริ่มต้นที่ตำแหน่งผู้ส่ง
+                                    zoom: 14,
+                                  ),
+                                  markers: {
+                                    Marker(
+                                      markerId: MarkerId('sender'),
+                                      position: senderLatLng,
+                                      infoWindow: InfoWindow(title: 'ผู้ส่ง'),
+                                      icon:
+                                          BitmapDescriptor.defaultMarkerWithHue(
+                                        BitmapDescriptor.hueGreen,
+                                      ),
+                                    ),
+                                    Marker(
+                                      markerId: MarkerId('receiver'),
+                                      position: receiverLatLng,
+                                      infoWindow: InfoWindow(title: 'ผู้รับ'),
+                                      icon:
+                                          BitmapDescriptor.defaultMarkerWithHue(
+                                        BitmapDescriptor.hueRed,
+                                      ),
+                                    ),
+                                    if (_riderLocation != null)
+                                      Marker(
+                                        markerId: MarkerId('rider'),
+                                        position: _riderLocation!,
+                                        infoWindow:
+                                            InfoWindow(title: 'ตำแหน่งของคุณ'),
+                                        icon: BitmapDescriptor
+                                            .defaultMarkerWithHue(
+                                          BitmapDescriptor.hueOrange,
+                                        ),
+                                      ),
+                                  },
+                                  zoomControlsEnabled: true,
+                                  scrollGesturesEnabled: true,
+                                  zoomGesturesEnabled: true,
+                                  minMaxZoomPreference:
+                                      MinMaxZoomPreference(10, 20),
+                                ),
+                              ),
+                              const SizedBox(height: 24),
                               _ActionButtons(
                                 canAccept: canAccept,
                                 onAccept: () => _accept(d.id),
@@ -723,7 +812,8 @@ class _ActionButtonsState extends State<_ActionButtons> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.arrow_back_ios_new_rounded, size: 16),
+                Icon(Icons.arrow_back_ios_new_rounded,
+                    size: 16, color: const Color(0xFFFD8700)),
                 const SizedBox(width: 8),
                 const Text('กลับ'),
               ],

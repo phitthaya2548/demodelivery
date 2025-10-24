@@ -30,7 +30,7 @@ class RiderLocationSender {
     required String riderId,
     LocationAccuracy accuracy = LocationAccuracy.bestForNavigation,
     int distanceFilter = 5,
-    Duration? throttle, // เช่น Duration(seconds: 3)
+    Duration? throttle,
   }) async {
     await _sub?.cancel();
 
@@ -65,20 +65,14 @@ class RiderLocationSender {
           if (riderData != null && riderData.containsKey('last_location')) {
             final lastLocation = riderData['last_location'];
             if (lastLocation != null) {
-              // ตรวจสอบว่า 'last_location' มีข้อมูลที่ไม่เป็น null
               yield lastLocation;
             } else {
-              // ถ้าไม่มีตำแหน่งก็ส่งค่าเป็น null
               yield null;
             }
           } else {
-            // ถ้าไม่มี 'last_location' ในข้อมูลก็ส่งค่าเป็น null
             yield null;
           }
-        } else {
-          // ถ้าเอกสารไม่พบ
-          yield null;
-        }
+        } else {}
       }
     } catch (e) {
       log('[Error] Error fetching rider location: $e');
@@ -306,7 +300,7 @@ class RiderLocationSender {
     subSender = _fs
         .collection('shipments')
         .where('sender_snapshot.user_id', isEqualTo: userId)
-        .where('status', whereIn: [2, 3]) 
+        .where('status', whereIn: [2, 3])
         .snapshots()
         .listen((qs) {
           final live = qs.docs.map((d) => d.id).toSet();

@@ -1,4 +1,4 @@
-// lib/pages/address/address_user_page.dart
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:deliverydomo/models/user_address.dart';
 import 'package:deliverydomo/pages/sesstion.dart';
@@ -22,9 +22,6 @@ class _AddressUserState extends State<AddressUser> {
   void initState() {
     super.initState();
     _repo = AddressRepository();
-    _geocoder = ThaiGeocoder(
-      googleApiKey: 'YOUR_GOOGLE_API_KEY', // TODO: ใส่คีย์จริงหรือปล่อยว่าง
-    );
   }
 
   Future<String?> _resolveUid() => _repo.resolveUidSmart(
@@ -74,7 +71,7 @@ class _AddressUserState extends State<AddressUser> {
               var docs = snap.data?.docs.toList() ?? [];
               if (docs.isEmpty) return const _EmptyHint();
 
-              // เรียง default ก่อน -> created_at ใหม่ก่อน
+              
               docs.sort((a, b) {
                 final da = ((a.data()['is_default'] ?? false) == true) ? 0 : 1;
                 final db = ((b.data()['is_default'] ?? false) == true) ? 0 : 1;
@@ -210,7 +207,7 @@ class _AddressUserState extends State<AddressUser> {
       ),
     );
 
-    // แจ้งเตือน "หลังปิดแผ่นเลื่อน" เมื่อเพิ่มสำเร็จ
+    
     if (result is Map && result['added'] == true) {
       final hasLat = result['latFound'] == true;
       Get.snackbar(
@@ -224,7 +221,7 @@ class _AddressUserState extends State<AddressUser> {
   }
 }
 
-// ---------- Empty hint ----------
+
 class _EmptyHint extends StatelessWidget {
   const _EmptyHint();
 
@@ -434,7 +431,7 @@ class _AddAddressSheetState extends State<_AddAddressSheet> {
         setDefault: _isDefault,
       );
 
-      // ✅ ส่งผลลัพธ์กลับให้หน้าหลักเป็นคนแจ้งเตือน
+      
       if (!mounted) return;
       Navigator.of(context).pop({
         'added': true,
