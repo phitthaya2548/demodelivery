@@ -6,6 +6,8 @@ import 'package:deliverydomo/pages/sesstion.dart';
 import 'package:deliverydomo/services/firebase_shipment.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+// ✅ เพิ่ม import แผนที่
+import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 
 class HomeUser extends StatefulWidget {
@@ -27,27 +29,33 @@ class _HomeUserState extends State<HomeUser> {
   final _itemNameCtrl = TextEditingController();
   final _itemNoteCtrl = TextEditingController();
 
-  // Shipment API (คุย Firestore/Storage เฉพาะเรื่อง shipments)
+  // Shipment API
   final _shipApi = ShipmentApi();
 
   // Runtime: ผู้รับ
   bool _searching = false;
   bool _creating = false;
-  bool _addingToCart = false; // “เพิ่มเป็น draft”
+  bool _addingToCart = false;
   bool _sendingAll = false;
-  String? _uid; // uid ของผู้รับ
-  Map<String, dynamic>? _user; // users/{uid}
+  String? _uid;
+  Map<String, dynamic>? _user;
   List<Map<String, dynamic>> _addresses = [];
-  String? _addressIdSelected; // id ที่อยู่ที่ถูกเลือก
+  String? _addressIdSelected;
 
   // รูปสินค้า
   File? _photoFile;
 
-  // ที่อยู่ผู้ส่ง (pickup) ที่จะโชว์และส่งขึ้น Firestore (แบบ normalize แล้ว)
+  // ที่อยู่ผู้ส่ง (pickup)
   Map<String, dynamic>? _senderPickupAddress;
 
-  // Draft count (นับจาก shipments: status=0)
+  // Draft count
   int _cartCount = 0;
+
+  // ===== Google Map state =====
+  GoogleMapController? _mapCtrl;
+  final Set<Marker> _markers = {};
+  LatLng? _pickupLatLng; // ผู้ส่ง
+  LatLng? _dropLatLng; // ผู้รับหลัก
 
   // ---------- Helpers ----------
   String _normalizePhone(String s) => s.replaceAll(RegExp(r'\D'), '');
@@ -74,6 +82,16 @@ class _HomeUserState extends State<HomeUser> {
     final la = _toDouble(lat), lo = _toDouble(lng);
     if (la == null || lo == null) return null;
     return GeoPoint(la, lo);
+  }
+
+  LatLng? _toLatLngFromMap(Map<String, dynamic>? m) {
+    if (m == null) return null;
+    final loc = m['location'];
+    if (loc is GeoPoint) return LatLng(loc.latitude, loc.longitude);
+    final lat = m['lat'] ?? m['latitude'];
+    final lng = m['lng'] ?? m['longitude'];
+    final gp = _geo(lat, lng);
+    return gp == null ? null : LatLng(gp.latitude, gp.longitude);
   }
 
   // ===== Address & Profile Helpers =====
@@ -118,26 +136,21 @@ class _HomeUserState extends State<HomeUser> {
     final doc = await fs.collection('users').doc(uidOrPhone).get();
     if (doc.exists) return doc.data();
 
-    // legacy fallback (เคยใช้ phone เป็น doc id)
     final legacy = await fs.collection('users').doc(uidOrPhone).get();
     return legacy.data();
   }
 
   String _pickPhotoUrl(Map<String, dynamic>? user) {
     if (user == null) return '';
-
-    // ตรวจสอบว่า avatarUrl อัปเดตแล้วหรือไม่
     final avatarUrl = (user['avatarUrl'] ?? '').toString();
     if (avatarUrl.isNotEmpty) return avatarUrl;
-
-    // หากไม่พบ avatarUrl ให้ตรวจสอบ photoUrl
     final photoUrl = (user['photoUrl'] ?? '').toString();
     if (photoUrl.isNotEmpty) return photoUrl;
-
-    return ''; // หากไม่มี URL
+    return '';
   }
 
   // ======= ค้นหา/โหลดข้อมูล =======
+
   Future<String?> _resolveUidByPhone(String phone) async {
     final fs = FirebaseFirestore.instance;
 
@@ -167,7 +180,7 @@ class _HomeUserState extends State<HomeUser> {
     return snap.data();
   }
 
-  /// โหลดที่อยู่ของผู้ใช้ และ "คืนค่ามาเฉพาะที่อยู่หลัก" เท่านั้น
+  /// โหลดที่อยู่ของผู้ใช้ และคืนค่ามาเฉพาะ "ที่อยู่หลัก" เท่านั้น (ถ้าไม่มีคืน [])
   Future<List<Map<String, dynamic>>> _loadAddressesForUid(
       String uid, String phone) async {
     final fs = FirebaseFirestore.instance;
@@ -245,6 +258,7 @@ class _HomeUserState extends State<HomeUser> {
       _user = null;
       _addresses = [];
       _addressIdSelected = null;
+      // ไม่ล้าง _senderPickupAddress เพื่อให้ UI ยังเห็นค่าปัจจุบันระหว่างโหลด
     });
 
     try {
@@ -256,8 +270,10 @@ class _HomeUserState extends State<HomeUser> {
 
       final profile = await _loadUserProfile(uid);
       final addresses = await _loadAddressesForUid(uid, phone);
+      final senderPickup =
+          await _getSenderDefaultAddress(); // โหลดที่อยู่ผู้ส่งด้วย
 
-      String? defaultId =
+      final String? defaultId =
           addresses.isNotEmpty ? addresses.first['id'] as String : null;
 
       setState(() {
@@ -265,7 +281,11 @@ class _HomeUserState extends State<HomeUser> {
         _user = profile ?? {'name': '-', 'phone': phone};
         _addresses = addresses;
         _addressIdSelected = defaultId;
+        _senderPickupAddress = senderPickup; // โชว์ทันที
       });
+
+      // ✅ อัปเดตแผนที่หลังได้ข้อมูล
+      _refreshMiniMap();
 
       if (addresses.isEmpty) _toast('ผู้รับยังไม่มีที่อยู่');
     } catch (e) {
@@ -359,6 +379,96 @@ class _HomeUserState extends State<HomeUser> {
       'is_default': (m['is_default'] ?? false) == true,
       'created_at': m['created_at'],
     };
+  }
+
+  // ====== Mini-map helpers ======
+  void _refreshMiniMap() {
+    // pickup
+    _pickupLatLng = _toLatLngFromMap(_senderPickupAddress);
+
+    // receiver main
+    LatLng? receiver;
+    if (_addressIdSelected != null) {
+      final a = _addresses.firstWhere(
+        (x) => x['id'] == _addressIdSelected,
+        orElse: () => {},
+      );
+      if (a.isNotEmpty) {
+        receiver = _toLatLngFromMap(_normalizeAddressMap(a));
+      }
+    }
+    _dropLatLng = receiver;
+
+    // markers
+    final newMarkers = <Marker>{};
+    if (_pickupLatLng != null) {
+      newMarkers.add(
+        Marker(
+          markerId: const MarkerId('pickup'),
+          position: _pickupLatLng!,
+          infoWindow: const InfoWindow(title: 'รับของ (ผู้ส่ง)'),
+        ),
+      );
+    }
+    if (_dropLatLng != null) {
+      newMarkers.add(
+        Marker(
+          markerId: const MarkerId('drop'),
+          position: _dropLatLng!,
+          infoWindow: const InfoWindow(title: 'ส่งของ (ผู้รับ)'),
+        ),
+      );
+    }
+
+    setState(() {
+      _markers
+        ..clear()
+        ..addAll(newMarkers);
+    });
+
+    // fit bounds เมื่อ controller พร้อม และมีอย่างน้อย 1 จุด
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (_mapCtrl == null) return;
+      if (_pickupLatLng == null && _dropLatLng == null) return;
+
+      if (_pickupLatLng != null && _dropLatLng != null) {
+        final sw = LatLng(
+          _pickupLatLng!.latitude <= _dropLatLng!.latitude
+              ? _pickupLatLng!.latitude
+              : _dropLatLng!.latitude,
+          _pickupLatLng!.longitude <= _dropLatLng!.longitude
+              ? _pickupLatLng!.longitude
+              : _dropLatLng!.longitude,
+        );
+        final ne = LatLng(
+          _pickupLatLng!.latitude >= _dropLatLng!.latitude
+              ? _pickupLatLng!.latitude
+              : _dropLatLng!.latitude,
+          _pickupLatLng!.longitude >= _dropLatLng!.longitude
+              ? _pickupLatLng!.longitude
+              : _dropLatLng!.longitude,
+        );
+        final bounds = LatLngBounds(southwest: sw, northeast: ne);
+        try {
+          await _mapCtrl!.animateCamera(
+            CameraUpdate.newLatLngBounds(bounds, 60),
+          );
+        } catch (_) {
+          // บางครั้งต้องรอให้แผนที่เรนเดอร์ก่อน
+          await Future.delayed(const Duration(milliseconds: 200));
+          await _mapCtrl!.animateCamera(
+            CameraUpdate.newLatLngBounds(bounds, 60),
+          );
+        }
+      } else {
+        final only = _pickupLatLng ?? _dropLatLng!;
+        await _mapCtrl!.animateCamera(
+          CameraUpdate.newCameraPosition(
+            CameraPosition(target: only, zoom: 15),
+          ),
+        );
+      }
+    });
   }
 
   // ============== สร้างคำสั่งเดี่ยวแบบยืนยัน (status=1) ==============
@@ -526,7 +636,7 @@ class _HomeUserState extends State<HomeUser> {
     }
   }
 
-  /// “ส่งทั้งหมด” → ยืนยัน draft ทั้งหมดใน shipments (status 0 → 1)
+  /// “ส่งทั้งหมด” → ยืนยัน draft ทั้งหมด (status 0 → 1)
   Future<void> _sendAllFromCart() async {
     final ownerId =
         (SessionStore.userId ?? SessionStore.phoneId ?? '').toString();
@@ -599,7 +709,7 @@ class _HomeUserState extends State<HomeUser> {
     }
   }
 
-  // ===== Draft counter (status=0 ใน shipments) =====
+  // ===== Draft counter =====
   Future<void> _refreshCartCount() async {
     final ownerId =
         (SessionStore.userId ?? SessionStore.phoneId ?? '').toString();
@@ -623,6 +733,8 @@ class _HomeUserState extends State<HomeUser> {
     try {
       final m = await _getSenderDefaultAddress();
       if (mounted) setState(() => _senderPickupAddress = m);
+      // มีที่อยู่ผู้ส่งแล้ว ลองรีเฟรชแผนที่
+      _refreshMiniMap();
     } catch (_) {}
   }
 
@@ -631,6 +743,7 @@ class _HomeUserState extends State<HomeUser> {
     _phoneCtrl.dispose();
     _itemNameCtrl.dispose();
     _itemNoteCtrl.dispose();
+    _mapCtrl?.dispose();
     super.dispose();
   }
 
@@ -703,6 +816,10 @@ class _HomeUserState extends State<HomeUser> {
                                     'ยังไม่มีที่อยู่หลัก — ให้ผู้รับเพิ่มในโปรไฟล์')
                               else
                                 _receiverAddressSummary(),
+                              const SizedBox(height: 10),
+
+                              // ✅ แผนที่จำลอง
+                              _miniMapCard(),
                             ],
                           ),
                   ),
@@ -1043,7 +1160,6 @@ class _HomeUserState extends State<HomeUser> {
     final name = (user?['name'] ?? '-').toString();
     final phone = (user?['phone'] ?? '-').toString();
 
-    // ดึง URL ของรูปล่าสุดจาก avatarUrl หรือ photoUrl
     final avatarUrl =
         (user?['avatarUrl'] ?? user?['photoUrl'] ?? '').toString();
 
@@ -1164,6 +1280,49 @@ class _HomeUserState extends State<HomeUser> {
     );
   }
 
+  // ✅ Mini-map card
+  Widget _miniMapCard() {
+    final hasAnyPoint = _pickupLatLng != null || _dropLatLng != null;
+
+    return _card(
+      child: SizedBox(
+        height: 220,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: hasAnyPoint
+              ? GoogleMap(
+                  initialCameraPosition: CameraPosition(
+                    target: _pickupLatLng ??
+                        _dropLatLng ??
+                        const LatLng(13.7563, 100.5018), // BKK fallback
+                    zoom: 13,
+                  ),
+                  myLocationButtonEnabled: false,
+                  zoomControlsEnabled: false,
+                  compassEnabled: false,
+                  markers: _markers,
+                  onMapCreated: (c) {
+                    _mapCtrl = c;
+                    // ฟิตกล้องครั้งแรก
+                    _refreshMiniMap();
+                  },
+                )
+              : Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: const [
+                      Icon(Icons.map_outlined, size: 40, color: Colors.black45),
+                      SizedBox(height: 6),
+                      Text('ยังไม่มีพิกัดให้แสดง',
+                          style: TextStyle(color: Colors.black54)),
+                    ],
+                  ),
+                ),
+        ),
+      ),
+    );
+  }
+
   Widget _primaryButton(
       {required IconData icon,
       required String text,
@@ -1249,8 +1408,6 @@ class _HomeUserState extends State<HomeUser> {
               final itemName = (m['item_name'] ?? '—').toString();
               final receiver =
                   ((m['receiver_snapshot']?['name']) ?? '—').toString();
-              final addrLabel =
-                  (m['delivery_address_snapshot']?['label'] ?? '').toString();
               final lastUrl = (m['last_photo_url'] ?? '').toString();
 
               final subtitleParts = <String>[];
@@ -1265,7 +1422,7 @@ class _HomeUserState extends State<HomeUser> {
                         backgroundImage: NetworkImage(lastUrl),
                       ),
                 title: Text(
-                  'ชื่อสินค้า ' + itemName,
+                  'ชื่อสินค้า $itemName',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(fontWeight: FontWeight.w800),

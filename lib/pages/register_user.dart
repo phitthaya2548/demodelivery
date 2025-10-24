@@ -25,7 +25,6 @@ class _RegisterUserState extends State<RegisterUser> {
   bool _loading = false;
   File? _imageFile;
 
-
   final _api = FirebaseUserApi();
 
   String _normalizePhone(String s) {
@@ -39,7 +38,6 @@ class _RegisterUserState extends State<RegisterUser> {
   String _hashPasswordNoSalt(String password, String phone) {
     return sha256.convert(utf8.encode('$phone::$password')).toString();
   }
-
 
   void _toast(String msg, {bool success = false}) {
     Get.showSnackbar(

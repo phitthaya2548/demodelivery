@@ -12,7 +12,7 @@ class RiderLocationSender {
   final FirebaseFirestore _fs;
   StreamSubscription<Position>? _sub;
 
-  /// อัปเดตครั้งเดียว
+  /// อัปเดตตำแหน่งไรเดอร์ครั้งเดียว
   Future<void> updateOnce({
     required String riderId,
     required double lat,
@@ -26,6 +26,7 @@ class RiderLocationSender {
     }, SetOptions(merge: true));
   }
 
+  /// เริ่มแชร์โลเกชันแบบสด (มี throttle/distanceFilter)
   Future<void> startLive({
     required String riderId,
     LocationAccuracy accuracy = LocationAccuracy.bestForNavigation,
@@ -44,9 +45,12 @@ class RiderLocationSender {
         if (throttle != null && now.difference(_lastSent) < throttle) return;
         _lastSent = now;
         await updateOnce(
-            riderId: riderId, lat: pos.latitude, lng: pos.longitude);
+          riderId: riderId,
+          lat: pos.latitude,
+          lng: pos.longitude,
+        );
       },
-      onError: (e) => print('[RiderLocationSender] stream error: $e'),
+      onError: (e) => log('[RiderLocationSender] stream error: $e'),
     );
   }
 
@@ -55,61 +59,82 @@ class RiderLocationSender {
     _sub = null;
   }
 
+  /// สตรีมตำแหน่งไรเดอร์จากคอลเลกชัน rider_location/{riderId}
   Stream<Map<String, dynamic>?> getRiderLocation(String riderId) async* {
     try {
+      if (riderId.trim().isEmpty) {
+        yield null;
+        return;
+      }
       final riderRef = _fs.collection('rider_location').doc(riderId);
-
-      await for (var riderSnapshot in riderRef.snapshots()) {
-        if (riderSnapshot.exists) {
-          final riderData = riderSnapshot.data();
-          if (riderData != null && riderData.containsKey('last_location')) {
-            final lastLocation = riderData['last_location'];
-            if (lastLocation != null) {
-              yield lastLocation;
-            } else {
-              yield null;
-            }
-          } else {
-            yield null;
-          }
-        } else {}
+      await for (final snap in riderRef.snapshots()) {
+        if (!snap.exists) {
+          yield null;
+          continue;
+        }
+        final data = snap.data();
+        final ll = (data?['last_location']);
+        if (ll is Map) {
+          yield ll.cast<String, dynamic>();
+        } else {
+          yield null;
+        }
       }
     } catch (e) {
-      log('[Error] Error fetching rider location: $e');
+      log('[Error] getRiderLocation: $e');
       yield null;
     }
   }
 
-  Stream<Map<String, dynamic>?> getShipmentLocation(String shipmentId) async* {
-    try {
-      final shipmentRef = _fs.collection('shipments').doc(shipmentId);
-      final shipmentSnapshot = await shipmentRef.get();
+  /// สตรีมตำแหน่งไรเดอร์ "ตาม shipment" แบบเรียลไทม์จริง:
+  /// - ถ้า shipment เปลี่ยน rider_id จะยกเลิกสตรีมเก่าแล้วตาม id ใหม่ให้อัตโนมัติ
+  Stream<Map<String, dynamic>?> getShipmentLocation(String shipmentId) {
+    final controller = StreamController<Map<String, dynamic>?>.broadcast();
+    StreamSubscription? subShipment;
+    StreamSubscription? subRiderLoc;
 
-      if (!shipmentSnapshot.exists) {
-        log('[Error] No shipment found for shipmentId: $shipmentId');
-        yield {};
+    void _followRider(String riderId) {
+      subRiderLoc?.cancel();
+      if (riderId.trim().isEmpty) {
+        controller.add({});
         return;
       }
-
-      final shipmentData = shipmentSnapshot.data();
-      final riderId = shipmentData?['rider_id'];
-
-      if (riderId == null || riderId.isEmpty) {
-        log('[Error] No riderId found for shipmentId: $shipmentId');
-        yield {};
-        return;
-      }
-
-      final riderLocationStream = getRiderLocation(riderId);
-
-      // Yielding the rider's location
-      yield* riderLocationStream;
-    } catch (e) {
-      log('[Error] Error fetching shipment and rider location: $e');
-      yield {};
+      subRiderLoc = getRiderLocation(riderId).listen(
+        (loc) => controller.add(loc ?? {}),
+        onError: (e) {
+          log('[Error] rider_location stream: $e');
+          controller.add({});
+        },
+      );
     }
+
+    subShipment =
+        _fs.collection('shipments').doc(shipmentId).snapshots().listen(
+      (snap) {
+        if (!snap.exists) {
+          log('[Error] shipment not found: $shipmentId');
+          controller.add({});
+          return;
+        }
+        final data = snap.data() ?? {};
+        final riderId = (data['rider_id'] ?? '').toString();
+        _followRider(riderId);
+      },
+      onError: (e) {
+        log('[Error] getShipmentLocation shipment stream: $e');
+        controller.add({});
+      },
+    );
+
+    controller.onCancel = () async {
+      await subShipment?.cancel();
+      await subRiderLoc?.cancel();
+    };
+
+    return controller.stream;
   }
 
+  /// ดึงรายการ shipment ของ user แบบ one-shot และ enrich โลเกชันไรเดอร์ (เฉพาะ snapshot แรก)
   Future<List<Map<String, dynamic>>> getShipmentsByUserId(String userId) async {
     userId = userId.trim();
     if (userId.isEmpty) {
@@ -122,37 +147,34 @@ class RiderLocationSender {
       final map = Map<String, dynamic>.from(data);
       map['id'] = (map['id'] ?? id).toString();
 
-      // เผื่ออยากเก็บ sender_user_id ไว้ใช้งาน
       final senderSnap =
           (map['sender_snapshot'] as Map?)?.cast<String, dynamic>();
       map['sender_user_id'] = senderSnap?['user_id']?.toString() ?? '';
 
-      // เติมตำแหน่งไรเดอร์ (เอา snapshot แรกพอ)
       final riderId = (map['rider_id'] ?? '').toString();
       if (riderId.isNotEmpty) {
         await for (final rl in getRiderLocation(riderId)) {
           if (rl != null) map['rider_location'] = rl;
-          break;
+          break; // เอาแค่ค่าล่าสุดครั้งเดียว
         }
       }
       return map;
     }
 
     try {
-      log('[Info] Fetching shipments for userId: $userId (try receiver first)');
+      log('[Info] Fetch shipments for userId=$userId (receiver first)');
 
-      // 1) ผู้รับก่อน
       final byReceiver = await _fs
           .collection('shipments')
           .where('receiver_id', isEqualTo: userId)
           .where('status', whereIn: [2, 3]).get();
+
       if (byReceiver.docs.isNotEmpty) {
         log('[Info] Found ${byReceiver.docs.length} by receiver_id');
         return Future.wait(byReceiver.docs.map((d) => _enrich(d.id, d.data())));
       }
 
-      // 2) ผู้ส่ง (ตามที่ debug เจอ: sender_snapshot.user_id)
-      log('[Info] No shipments by receiver. Try sender_snapshot.user_id...');
+      log('[Info] Try sender_snapshot.user_id ...');
       final bySender = await _fs
           .collection('shipments')
           .where('sender_snapshot.user_id', isEqualTo: userId)
@@ -163,21 +185,19 @@ class RiderLocationSender {
         return Future.wait(bySender.docs.map((d) => _enrich(d.id, d.data())));
       }
 
-      log('[Info] No shipments found for userId: $userId (receiver & sender)');
+      log('[Info] No shipments for userId=$userId');
       return [];
     } catch (e) {
-      log('[Error] Error fetching shipments for userId $userId: $e');
+      log('[Error] getShipmentsByUserId: $e');
       return [];
     }
   }
 
+  /// ดีบักหา path ที่ค่าตรงกับ userId
   Future<void> debugScanUserIdPaths(String userId) async {
     final qs = await _fs.collection('shipments').limit(200).get();
-
-    // ค่าที่จะเทียบ (String)
     final target = userId.trim();
 
-    // ค้นหาแบบ recursive ใน Map/List ทุกระดับ
     void dfs(dynamic node, List<String> path, String docId) {
       if (node is Map) {
         node.forEach((k, v) => dfs(v, [...path, k.toString()], docId));
@@ -198,6 +218,7 @@ class RiderLocationSender {
     }
   }
 
+  /// (ภายใน) สตรีมตำแหน่งของไรเดอร์คนหนึ่ง
   Stream<Map<String, dynamic>?> getShipmentLocationForRider(String riderId) {
     final doc = _fs.collection('rider_location').doc(riderId);
     return doc.snapshots().map((s) {
@@ -209,93 +230,166 @@ class RiderLocationSender {
     });
   }
 
-  Stream<List<Map<String, dynamic>>> watchShipmentsForUser(String userId) {
+  // ---------------------------------------------------------------------------
+  // 🧠 สตรีมหลัก: ดู shipment ของผู้ใช้ (ส่ง/รับ) แบบเรียลไทม์ + โลเกชัน/ชื่อไรเดอร์
+  // แก้บั๊ก "ไรเดอร์ฝั่งส่งไปโผล่ฝั่งรับ" ด้วยการ prune จาก live IDs จริงสองฝั่ง
+  // ---------------------------------------------------------------------------
+  Stream<Map<String, List<Map<String, dynamic>>>> watchShipmentsForUser(
+      String userId) {
     userId = userId.trim();
-    if (userId.isEmpty) return Stream.value(const []);
+    if (userId.isEmpty) {
+      return Stream.value(const {'sending': [], 'receiving': []});
+    }
 
-    final controller = StreamController<List<Map<String, dynamic>>>.broadcast();
-    final byId = <String, Map<String, dynamic>>{}; // docId -> shipment
-    final riderLocSubs = <String, StreamSubscription?>{}; // riderId -> sub loc
-    final riderNameSubs =
-        <String, StreamSubscription?>{}; // riderId -> sub name
+    final controller =
+        StreamController<Map<String, List<Map<String, dynamic>>>>.broadcast();
+
+    // แยกกองอย่างชัดเจน
+    final byIdSend = <String, Map<String, dynamic>>{}; // sender side only
+    final byIdRecv = <String, Map<String, dynamic>>{}; // receiver side only
+
+    // สตรีมย่อยของไรเดอร์ (แชร์ตาม riderId)
+    final riderLocSubs = <String, StreamSubscription?>{};
+    final riderNameSubs = <String, StreamSubscription?>{};
+
+    // live ids ของแต่ละฝั่ง
+    final liveReceiverIds = <String>{};
+    final liveSenderIds = <String>{};
+
     StreamSubscription? subReceiver;
     StreamSubscription? subSender;
 
-    void _emit() => controller.add(byId.values.toList());
+    void _emit() {
+      controller.add({
+        'sending': byIdSend.values.toList(),
+        'receiving': byIdRecv.values.toList(),
+      });
+    }
 
     void _attachRiderLocation(String riderId) {
       riderLocSubs[riderId] ??=
           getShipmentLocationForRider(riderId).listen((loc) {
         if (loc == null) return;
-        for (final e in byId.entries) {
+
+        // อัปเดตทั้งสองกองที่มี riderId นี้
+        for (final e in byIdSend.entries) {
+          if ((e.value['rider_id'] ?? '').toString() == riderId) {
+            e.value['rider_location'] = loc;
+          }
+        }
+        for (final e in byIdRecv.entries) {
           if ((e.value['rider_id'] ?? '').toString() == riderId) {
             e.value['rider_location'] = loc;
           }
         }
         _emit();
-      });
+      }, onError: (_) {});
     }
 
-    // 👇 ผูกชื่อไรเดอร์ จากคอลเลกชัน "riders"
     void _attachRiderName(String riderId) {
       riderNameSubs[riderId] ??=
           _fs.collection('riders').doc(riderId).snapshots().listen((doc) {
         final name = (doc.data()?['name'] ?? '').toString();
-        for (final e in byId.entries) {
+
+        for (final e in byIdSend.entries) {
           if ((e.value['rider_id'] ?? '').toString() == riderId) {
-            e.value['rider_name'] = name; // ✅ ใส่ชื่อเข้า shipment
+            e.value['rider_name'] = name;
+          }
+        }
+        for (final e in byIdRecv.entries) {
+          if ((e.value['rider_id'] ?? '').toString() == riderId) {
+            e.value['rider_name'] = name;
           }
         }
         _emit();
-      }, onError: (e) {
-        // เงียบไว้ก็ได้
-      });
+      }, onError: (_) {});
     }
 
-    void _upsertDoc(QueryDocumentSnapshot<Map<String, dynamic>> d) {
+    Map<String, dynamic> _baseMapFromDoc(
+        QueryDocumentSnapshot<Map<String, dynamic>> d) {
       final m = Map<String, dynamic>.from(d.data());
       m['id'] = (m['id'] ?? d.id).toString();
-
       final sx = (m['sender_snapshot'] as Map?)?.cast<String, dynamic>();
       m['sender_user_id'] = sx?['user_id']?.toString() ?? '';
+      return m;
+    }
 
-      byId[d.id] = m;
+    void _upsertSenderDoc(QueryDocumentSnapshot<Map<String, dynamic>> d) {
+      final m = _baseMapFromDoc(d);
+      byIdSend[d.id] = m;
 
       final riderId = (m['rider_id'] ?? '').toString();
       if (riderId.isNotEmpty) {
         _attachRiderLocation(riderId);
-        _attachRiderName(riderId); // ✅ ผูกชื่อไว้ด้วย
+        _attachRiderName(riderId);
       }
     }
 
-    void _pruneMissing(Set<String> liveIds) {
-      final removed = byId.keys.where((k) => !liveIds.contains(k)).toList();
-      for (final id in removed) {
-        final riderId = (byId[id]?['rider_id'] ?? '').toString();
-        byId.remove(id);
+    void _upsertReceiverDoc(QueryDocumentSnapshot<Map<String, dynamic>> d) {
+      final m = _baseMapFromDoc(d);
+      byIdRecv[d.id] = m;
 
-        // ถ้าไม่มี shipment ไหนใช้ riderId นี้แล้ว ยกเลิกสตรีมทั้ง loc และ name
-        final stillUsed = byId.values.any(
-          (m) => (m['rider_id'] ?? '').toString() == riderId,
-        );
-        if (!stillUsed && riderId.isNotEmpty) {
-          riderLocSubs.remove(riderId)?.cancel();
-          riderNameSubs.remove(riderId)?.cancel();
-        }
+      final riderId = (m['rider_id'] ?? '').toString();
+      if (riderId.isNotEmpty) {
+        _attachRiderLocation(riderId);
+        _attachRiderName(riderId);
+      }
+    }
+
+    void _pruneMissingSets() {
+      // ลบ sender ที่ไม่อยู่ในผลลัพธ์ sender สด
+      final removedSend =
+          byIdSend.keys.where((k) => !liveSenderIds.contains(k)).toList();
+      for (final id in removedSend) {
+        byIdSend.remove(id);
+      }
+
+      // ลบ receiver ที่ไม่อยู่ในผลลัพธ์ receiver สด
+      final removedRecv =
+          byIdRecv.keys.where((k) => !liveReceiverIds.contains(k)).toList();
+      for (final id in removedRecv) {
+        byIdRecv.remove(id);
+      }
+
+      // เก็บกวาดสตรีมไรเดอร์ที่ไม่มี shipment ไหนใช้แล้ว
+      final allStillUsedRiderIds = <String>{};
+      for (final m in byIdSend.values) {
+        final r = (m['rider_id'] ?? '').toString();
+        if (r.isNotEmpty) allStillUsedRiderIds.add(r);
+      }
+      for (final m in byIdRecv.values) {
+        final r = (m['rider_id'] ?? '').toString();
+        if (r.isNotEmpty) allStillUsedRiderIds.add(r);
+      }
+
+      final toCancelLoc = riderLocSubs.keys
+          .where((rid) => !allStillUsedRiderIds.contains(rid))
+          .toList();
+      for (final rid in toCancelLoc) {
+        riderLocSubs.remove(rid)?.cancel();
+      }
+
+      final toCancelName = riderNameSubs.keys
+          .where((rid) => !allStillUsedRiderIds.contains(rid))
+          .toList();
+      for (final rid in toCancelName) {
+        riderNameSubs.remove(rid)?.cancel();
       }
     }
 
     subReceiver = _fs
         .collection('shipments')
         .where('receiver_id', isEqualTo: userId)
-        .where('status', whereIn: [2, 3]) // <=
+        .where('status', whereIn: [2, 3])
         .snapshots()
         .listen((qs) {
-          final live = qs.docs.map((d) => d.id).toSet();
-          for (final d in qs.docs) _upsertDoc(d);
-          _pruneMissing(live.union(byId.keys.toSet()));
+          liveReceiverIds
+            ..clear()
+            ..addAll(qs.docs.map((d) => d.id));
+          for (final d in qs.docs) _upsertReceiverDoc(d);
+          _pruneMissingSets();
           _emit();
-        });
+        }, onError: (e) => log('[Error] watchShipmentsForUser(receiver): $e'));
 
     subSender = _fs
         .collection('shipments')
@@ -303,11 +397,13 @@ class RiderLocationSender {
         .where('status', whereIn: [2, 3])
         .snapshots()
         .listen((qs) {
-          final live = qs.docs.map((d) => d.id).toSet();
-          for (final d in qs.docs) _upsertDoc(d);
-          _pruneMissing(live.union(byId.keys.toSet()));
+          liveSenderIds
+            ..clear()
+            ..addAll(qs.docs.map((d) => d.id));
+          for (final d in qs.docs) _upsertSenderDoc(d);
+          _pruneMissingSets();
           _emit();
-        });
+        }, onError: (e) => log('[Error] watchShipmentsForUser(sender): $e'));
 
     controller.onCancel = () async {
       await subReceiver?.cancel();

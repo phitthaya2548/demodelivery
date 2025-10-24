@@ -17,8 +17,7 @@ class FollowItem extends StatefulWidget {
   State<FollowItem> createState() => _FollowItemState();
 }
 
-class _FollowItemState extends State<FollowItem>
-    with SingleTickerProviderStateMixin {
+class _FollowItemState extends State<FollowItem> with TickerProviderStateMixin {
   static const _primaryOrange = Color(0xFFFD8700);
   static const _lightOrange = Color(0xFFFFB84D);
   static const _paleOrange = Color(0xFFFFF4E6);
@@ -32,6 +31,7 @@ class _FollowItemState extends State<FollowItem>
 
   late RiderLocationSender riderLocationSender;
   late AnimationController _animController;
+  late TabController _tabController;
 
   double latSender = 0.0;
   double lngSender = 0.0;
@@ -41,6 +41,7 @@ class _FollowItemState extends State<FollowItem>
   GoogleMapController? _mapController;
 
   List<LatLng> points = [];
+  int _currentTabIndex = 0; // 0 = ส่งของ, 1 = รับของ
 
   @override
   void initState() {
@@ -50,11 +51,20 @@ class _FollowItemState extends State<FollowItem>
       vsync: this,
       duration: const Duration(milliseconds: 300),
     )..forward();
+    _tabController = TabController(length: 2, vsync: this);
+    _tabController.addListener(() {
+      if (_tabController.indexIsChanging) {
+        setState(() {
+          _currentTabIndex = _tabController.index;
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
     _animController.dispose();
+    _tabController.dispose();
     super.dispose();
   }
 
@@ -94,10 +104,11 @@ class _FollowItemState extends State<FollowItem>
   Stream<List<ShipmentPhoto>> get _photosStream =>
       _repo.watchShipmentPhotos(widget.shipmentId);
 
-  Stream<List<Map<String, dynamic>>> get _allShipmentsStream {
+  Stream<Map<String, List<Map<String, dynamic>>>> get _allShipmentsStream {
     final auth = SessionStore.getAuth();
     final userId = (auth?.userId ?? '').trim();
-    if (userId.isEmpty) return Stream.value(const []);
+    if (userId.isEmpty)
+      return Stream.value(const {'sending': [], 'receiving': []});
     return riderLocationSender.watchShipmentsForUser(userId);
   }
 
@@ -117,11 +128,9 @@ class _FollowItemState extends State<FollowItem>
       throw Exception('OSRM ${res.statusCode}');
     }
     final data = jsonDecode(res.body);
-    debugPrint('OSRM Response: $data');
 
     final routes = (data['routes'] as List);
     if (routes.isEmpty) {
-      debugPrint('No routes found');
       return {'points': <LatLng>[], 'duration': 0.0, 'distance': 0.0};
     }
     final route = routes.first as Map;
@@ -263,212 +272,249 @@ class _FollowItemState extends State<FollowItem>
 
           return FadeTransition(
             opacity: _animController,
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(16, 120, 16, 24),
-              child: Column(
-                children: [
-                  StreamBuilder<Map<String, dynamic>?>(
-                    stream: riderLocationSender
-                        .getShipmentLocation(widget.shipmentId),
-                    builder: (context, snapshot) {
-                      if (snapshot.connectionState == ConnectionState.waiting) {
-                        return _shimmerCard(height: 120);
-                      }
-                      if (snapshot.hasError) {
-                        return _errorWidget('Error: ${snapshot.error}');
-                      }
-                      if (!snapshot.hasData || snapshot.data == null) {
-                        return _infoCard(
-                          icon: Icons.info_outline,
-                          message: 'ไม่พบข้อมูลตำแหน่งไรเดอร์',
-                        );
-                      }
+            child: Column(
+              children: [
+                const SizedBox(height: 100),
+                // Tab Bar
+                Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: [
+                      BoxShadow(
+                        color: _primaryOrange.withOpacity(0.1),
+                        blurRadius: 12,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+                    child: Column(
+                      children: [
+                        StreamBuilder<Map<String, dynamic>?>(
+                          stream: riderLocationSender
+                              .getShipmentLocation(widget.shipmentId),
+                          builder: (context, snapshot) {
+                            if (snapshot.connectionState ==
+                                ConnectionState.waiting) {
+                              return _shimmerCard(height: 120);
+                            }
+                            if (snapshot.hasError) {
+                              return _errorWidget('Error: ${snapshot.error}');
+                            }
+                            if (!snapshot.hasData || snapshot.data == null) {
+                              return _infoCard(
+                                icon: Icons.info_outline,
+                                message: 'ไม่พบข้อมูลตำแหน่งไรเดอร์',
+                              );
+                            }
 
-                      final riderLocation = snapshot.data;
-                      if (riderLocation == null || riderLocation.isEmpty) {
-                        return _infoCard(
-                          icon: Icons.location_off,
-                          message: 'ไม่มีข้อมูลตำแหน่งไรเดอร์',
-                        );
-                      }
+                            final riderLocation = snapshot.data;
+                            if (riderLocation == null ||
+                                riderLocation.isEmpty) {
+                              return _infoCard(
+                                icon: Icons.location_off,
+                                message: 'ไม่มีข้อมูลตำแหน่งไรเดอร์',
+                              );
+                            }
 
-                      final riderLat = riderLocation['lat'];
-                      final riderLng = riderLocation['lng'];
+                            final riderLat = riderLocation['lat'];
+                            final riderLng = riderLocation['lng'];
 
-                      return Column(
-                        children: [
-                          // Rider Header
-                          if (status >= 2)
-                            _RiderHeader(
-                              riderSnapshot:
-                                  riderSnap.isNotEmpty ? riderSnap : riderObj,
-                              riderId: riderId,
-                              repo: _repo,
-                            )
-                          else
-                            const _RiderHeader(
-                              riderSnapshot: {},
-                              riderId: '-',
-                              repo: null, // not used in this branch
-                            ),
-                          const SizedBox(height: 16),
-
-                          // Map Card (แสดงเฉพาะสถานะ < 4)
-                          if (status < 4)
-                            StreamBuilder<List<Map<String, dynamic>>>(
-                              stream: _allShipmentsStream,
-                              builder: (context, shipmentsSnap) {
-                                final shipments = shipmentsSnap.data ?? [];
-
-                                // ✅ เลือกปลายทางของเส้นทางตามสถานะ
-                                final LatLng dest = (status >=
-                                        3) // หลังรับของแล้ว → ไปผู้รับ
-                                    ? LatLng(latReceiver, lngReceiver)
-                                    : LatLng(latSender,
-                                        lngSender); // ยังไม่รับของ → ไปผู้ส่ง
-
-                                return FutureBuilder<Map<String, dynamic>>(
-                                  future: _getOSRM(
-                                    LatLng(riderLat, riderLng),
-                                    dest,
+                            return Column(
+                              children: [
+                                // Rider Header
+                                if (status >= 2)
+                                  _RiderHeader(
+                                    riderSnapshot: riderSnap.isNotEmpty
+                                        ? riderSnap
+                                        : riderObj,
+                                    riderId: riderId,
+                                    repo: _repo,
+                                  )
+                                else
+                                  const _RiderHeader(
+                                    riderSnapshot: {},
+                                    riderId: '-',
+                                    repo: null,
                                   ),
-                                  builder: (context, osrmSnap) {
-                                    final osrmPoints =
-                                        osrmSnap.data?['points'] ?? <LatLng>[];
-                                    final routeLabel = (status >= 3)
-                                        ? 'เส้นทางไปผู้รับ'
-                                        : 'เส้นทางไปผู้ส่ง';
-                                    return _mapCard(
-                                      riderLat: riderLat,
-                                      riderLng: riderLng,
-                                      senderLat: latSender,
-                                      senderLng: lngSender,
-                                      receiverLat: latReceiver,
-                                      receiverLng: lngReceiver,
-                                      points: osrmPoints,
-                                      shipments: shipments,
-                                      currentShipmentId:
-                                          widget.shipmentId, // กันหมุดซ้ำ
-                                      routeLabel: routeLabel, // ป้ายบอกทาง
+                                const SizedBox(height: 16),
+
+                                // Map Card (แสดงตาม Tab)
+                                if (status < 4)
+                                  StreamBuilder<
+                                      Map<String, List<Map<String, dynamic>>>>(
+                                    stream: _allShipmentsStream,
+                                    builder: (context, shipmentsSnap) {
+                                      final allShipments =
+                                          shipmentsSnap.data ?? {};
+
+                                      // แยก shipments ตาม Tab
+                                      final displayShipments =
+                                          _currentTabIndex == 0
+                                              ? allShipments['sending'] ?? []
+                                              : allShipments['receiving'] ?? [];
+
+                                      // เลือกปลายทางตามสถานะ
+                                      final LatLng dest = (status >= 3)
+                                          ? LatLng(latReceiver, lngReceiver)
+                                          : LatLng(latSender, lngSender);
+
+                                      return FutureBuilder<
+                                          Map<String, dynamic>>(
+                                        future: _getOSRM(
+                                          LatLng(riderLat, riderLng),
+                                          dest,
+                                        ),
+                                        builder: (context, osrmSnap) {
+                                          final osrmPoints =
+                                              osrmSnap.data?['points'] ??
+                                                  <LatLng>[];
+                                          final routeLabel = (status >= 3)
+                                              ? 'เส้นทางไปผู้รับ'
+                                              : 'เส้นทางไปผู้ส่ง';
+                                          return _mapCard(
+                                            riderLat: riderLat,
+                                            riderLng: riderLng,
+                                            senderLat: latSender,
+                                            senderLng: lngSender,
+                                            receiverLat: latReceiver,
+                                            receiverLng: lngReceiver,
+                                            points: osrmPoints,
+                                            shipments: displayShipments,
+                                            currentShipmentId:
+                                                widget.shipmentId,
+                                            routeLabel: routeLabel,
+                                            tabLabel: _currentTabIndex == 0
+                                                ? 'งานส่งของ'
+                                                : 'งานรับของ',
+                                          );
+                                        },
+                                      );
+                                    },
+                                  ),
+                                const SizedBox(height: 16),
+
+                                _partyCardFromUserDoc(
+                                  uid: senderuid,
+                                  phone: senderPhone,
+                                  title: 'ผู้ส่ง',
+                                  name: (sender['name'] ?? '').toString(),
+                                  addressLine: senderAddressDetail,
+                                  gradientColors: [
+                                    Colors.red.shade50,
+                                    Colors.orange.shade50
+                                  ],
+                                  fallbackPhotoUrl:
+                                      (sender['photoUrl'] ?? '').toString(),
+                                ),
+                                const SizedBox(height: 16),
+
+                                _partyCardFromUserDoc(
+                                  uid: receiveruid,
+                                  phone: receiverPhone,
+                                  title: 'ผู้รับ',
+                                  name: (receiver['name'] ?? '').toString(),
+                                  addressLine: detail_delivery,
+                                  gradientColors: [
+                                    Colors.green.shade50,
+                                    Colors.teal.shade50
+                                  ],
+                                  fallbackPhotoUrl: (receiver['photoUrl'] ??
+                                          receiver['photo_url'] ??
+                                          '')
+                                      .toString(),
+                                ),
+                                const SizedBox(height: 16),
+
+                                _statusSection(status),
+                                const SizedBox(height: 16),
+
+                                StreamBuilder<List<ShipmentPhoto>>(
+                                  stream: _photosStream,
+                                  builder: (context, ps) {
+                                    if (ps.connectionState ==
+                                        ConnectionState.waiting) {
+                                      return _shimmerCard(height: 100);
+                                    }
+                                    if (ps.hasError) {
+                                      return _errorWidget(
+                                          'โหลดรูปไม่สำเร็จ: ${ps.error}');
+                                    }
+                                    final photos =
+                                        ps.data ?? const <ShipmentPhoto>[];
+                                    if (photos.isEmpty) {
+                                      return _infoCard(
+                                        icon: Icons.photo_library_outlined,
+                                        message: 'ยังไม่มีรูปจากไรเดอร์',
+                                      );
+                                    }
+
+                                    final byStatus =
+                                        <int, List<ShipmentPhoto>>{};
+                                    for (final p in photos) {
+                                      byStatus
+                                          .putIfAbsent(p.status, () => [])
+                                          .add(p);
+                                    }
+
+                                    return Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.stretch,
+                                      children: [
+                                        if ((byStatus[1] ?? []).isNotEmpty) ...[
+                                          _photoGroupHeader('รูปตอนรับสินค้า',
+                                              Colors.yellow.shade700),
+                                          _photoGrid(byStatus[1]!),
+                                          const SizedBox(height: 16),
+                                        ],
+                                        if ((byStatus[2] ?? []).isNotEmpty) ...[
+                                          _photoGroupHeader('รูประหว่างเดินทาง',
+                                              Colors.orange.shade700),
+                                          _photoGrid(byStatus[2]!),
+                                          const SizedBox(height: 16),
+                                        ],
+                                        if ((byStatus[3] ?? []).isNotEmpty) ...[
+                                          _photoGroupHeader('รูปกำลังไปส่ง',
+                                              Colors.blue.shade700),
+                                          _photoGrid(byStatus[3]!),
+                                          const SizedBox(height: 16),
+                                        ],
+                                        if ((byStatus[4] ?? []).isNotEmpty) ...[
+                                          _photoGroupHeader('รูปส่งสินค้าแล้ว',
+                                              Colors.green.shade700),
+                                          _photoGrid(byStatus[4]!),
+                                        ],
+                                      ],
                                     );
                                   },
-                                );
-                              },
-                            ),
-                          const SizedBox(height: 16),
+                                ),
+                                const SizedBox(height: 24),
 
-                          _partyCardFromUserDoc(
-                            uid: senderuid,
-                            phone: senderPhone,
-                            title: 'ผู้ส่ง',
-                            name: (sender['name'] ?? '').toString(),
-                            addressLine: senderAddressDetail,
-                            gradientColors: [
-                              Colors.red.shade50,
-                              Colors.orange.shade50
-                            ],
-                            fallbackPhotoUrl:
-                                (sender['photoUrl'] ?? '').toString(),
-                          ),
-                          const SizedBox(height: 16),
-
-                          // Receiver (real-time + phone fallback)
-                          _partyCardFromUserDoc(
-                            uid: receiveruid,
-                            phone: receiverPhone,
-                            title: 'ผู้รับ',
-                            name: (receiver['name'] ?? '').toString(),
-                            addressLine: detail_delivery,
-                            gradientColors: [
-                              Colors.green.shade50,
-                              Colors.teal.shade50
-                            ],
-                            fallbackPhotoUrl: (receiver['photoUrl'] ??
-                                    receiver['photo_url'] ??
-                                    '')
-                                .toString(),
-                          ),
-                          const SizedBox(height: 16),
-
-                          // Status Section
-                          _statusSection(status),
-                          const SizedBox(height: 16),
-
-                          // Photos Section
-                          StreamBuilder<List<ShipmentPhoto>>(
-                            stream: _photosStream,
-                            builder: (context, ps) {
-                              if (ps.connectionState ==
-                                  ConnectionState.waiting) {
-                                return _shimmerCard(height: 100);
-                              }
-                              if (ps.hasError) {
-                                return _errorWidget(
-                                    'โหลดรูปไม่สำเร็จ: ${ps.error}');
-                              }
-                              final photos = ps.data ?? const <ShipmentPhoto>[];
-                              if (photos.isEmpty) {
-                                return _infoCard(
-                                  icon: Icons.photo_library_outlined,
-                                  message: 'ยังไม่มีรูปจากไรเดอร์',
-                                );
-                              }
-
-                              final byStatus = <int, List<ShipmentPhoto>>{};
-                              for (final p in photos) {
-                                byStatus.putIfAbsent(p.status, () => []).add(p);
-                              }
-
-                              return Column(
-                                crossAxisAlignment: CrossAxisAlignment.stretch,
-                                children: [
-                                  if ((byStatus[1] ?? []).isNotEmpty) ...[
-                                    _photoGroupHeader('รูปตอนรับสินค้า',
-                                        Colors.yellow.shade700),
-                                    _photoGrid(byStatus[1]!),
-                                    const SizedBox(height: 16),
-                                  ],
-                                  if ((byStatus[2] ?? []).isNotEmpty) ...[
-                                    _photoGroupHeader('รูประหว่างเดินทาง',
-                                        Colors.orange.shade700),
-                                    _photoGrid(byStatus[2]!),
-                                    const SizedBox(height: 16),
-                                  ],
-                                  if ((byStatus[3] ?? []).isNotEmpty) ...[
-                                    _photoGroupHeader(
-                                        'รูปกำลังไปส่ง', Colors.blue.shade700),
-                                    _photoGrid(byStatus[3]!),
-                                    const SizedBox(height: 16),
-                                  ],
-                                  if ((byStatus[4] ?? []).isNotEmpty) ...[
-                                    _photoGroupHeader('รูปส่งสินค้าแล้ว',
-                                        Colors.green.shade700),
-                                    _photoGrid(byStatus[4]!),
-                                  ],
-                                ],
-                              );
-                            },
-                          ),
-                          const SizedBox(height: 24),
-
-                          // Back Button
-                          _modernButton(
-                            onPressed: () => Navigator.pop(context),
-                            child: const Text(
-                              'ย้อนกลับ',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w700,
-                                letterSpacing: 0.5,
-                              ),
-                            ),
-                          ),
-                        ],
-                      );
-                    },
+                                _modernButton(
+                                  onPressed: () => Navigator.pop(context),
+                                  child: const Text(
+                                    'ย้อนกลับ',
+                                    style: TextStyle(
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.w700,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            );
+                          },
+                        ),
+                      ],
+                    ),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           );
         },
@@ -491,7 +537,8 @@ class _FollowItemState extends State<FollowItem>
     required List<LatLng> points,
     required List<Map<String, dynamic>> shipments,
     String? currentShipmentId,
-    String? routeLabel, // ✅ เพิ่มพารามิเตอร์เพื่อโชว์ป้ายเส้นทาง
+    String? routeLabel,
+    String? tabLabel,
     bool myLocationEnabled = true,
   }) {
     final markers = <Marker>{};
@@ -543,6 +590,7 @@ class _FollowItemState extends State<FollowItem>
       icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
     ));
 
+    // แสดงเฉพาะ riders ในแท็บที่เลือก
     for (final s in shipments) {
       final rl = s['rider_location'];
       if (rl is! Map) continue;
@@ -551,11 +599,9 @@ class _FollowItemState extends State<FollowItem>
       final lng = (rl['lng'] as num?)?.toDouble();
       if (lat == null || lng == null) continue;
 
-      // กันซ้ำ: ไม่วางหมุดของ shipment ปัจจุบัน (คือไรเดอร์หลัก)
       final sid = (s['id'] ?? '').toString();
       if (currentShipmentId != null && sid == currentShipmentId) continue;
 
-      // (ออปชันกันพิกัดซ้อน) ถ้าพิกัดตรงกับหลักเกินไปก็ข้าม
       const eps = 1e-6;
       if ((lat - riderLat).abs() < eps && (lng - riderLng).abs() < eps)
         continue;
@@ -564,7 +610,6 @@ class _FollowItemState extends State<FollowItem>
       allPositions.add(pos);
 
       final riderTitle = (s['rider_name'] ?? s['rider_id'] ?? '').toString();
-
       final status = int.tryParse('${s['status'] ?? ''}') ?? 0;
       final hue = _hueForStatus(status);
 
@@ -618,6 +663,7 @@ class _FollowItemState extends State<FollowItem>
         child: Stack(
           children: [
             GoogleMap(
+              key: ValueKey(_currentTabIndex), // บังคับให้แผนที่รีเฟรช
               initialCameraPosition: CameraPosition(
                 target: initialTarget,
                 zoom: 13,
@@ -646,7 +692,6 @@ class _FollowItemState extends State<FollowItem>
                 WidgetsBinding.instance.addPostFrameCallback((_) => fitAll());
               },
             ),
-            // ปุ่ม fitAll
             Positioned(
               top: 16,
               right: 16,
@@ -662,7 +707,6 @@ class _FollowItemState extends State<FollowItem>
                 ),
               ),
             ),
-            // ✅ ป้ายแสดงปลายทางเส้นทาง
             if ((routeLabel ?? '').isNotEmpty)
               Positioned(
                 top: 16,
@@ -698,7 +742,45 @@ class _FollowItemState extends State<FollowItem>
                   ),
                 ),
               ),
-            // Legend
+            // ป้ายแสดงประเภทงาน
+            if ((tabLabel ?? '').isNotEmpty)
+              Positioned(
+                top: 60,
+                left: 16,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [_primaryOrange, _lightOrange],
+                    ),
+                    borderRadius: BorderRadius.circular(10),
+                    boxShadow: [
+                      BoxShadow(
+                        color: _primaryOrange.withOpacity(0.3),
+                        blurRadius: 8,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.local_shipping,
+                          size: 16, color: Colors.white),
+                      const SizedBox(width: 6),
+                      Text(
+                        tabLabel!,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 12,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             Positioned(
               left: 16,
               bottom: 16,

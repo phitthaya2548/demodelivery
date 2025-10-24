@@ -1,4 +1,5 @@
-import 'dart:async'; // Added for Completer, though Geolocator already imports it
+import 'dart:async'; // เพิ่ม Completer (แม้ว่า Geolocator จะมีอยู่แล้ว)
+import 'dart:developer';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:deliverydomo/models/user_address.dart';
@@ -9,9 +10,9 @@ import 'package:flutter/material.dart';
 import 'package:geocoding/geocoding.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:get/get.dart';
-// --- Imports for Map Selection ---
+// --- Import สำหรับการเลือกแผนที่ ---
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-// Removed duplicate geolocator and get imports
+// ลบ import ที่ซ้ำซ้อน (geolocator และ get)
 
 class AddressUser extends StatefulWidget {
   const AddressUser({Key? key}) : super(key: key);
@@ -268,7 +269,7 @@ class _EmptyHint extends StatelessWidget {
   }
 }
 
-// ---------- Bottom sheet: add address ----------
+// ---------- Bottom sheet: เพิ่มที่อยู่ ----------
 
 class _AddAddressSheet extends StatefulWidget {
   const _AddAddressSheet({
@@ -293,7 +294,7 @@ class _AddAddressSheetState extends State<_AddAddressSheet> {
   bool _isDefault = false;
   bool _saving = false;
 
-  // --- State for Map Selection ---
+  // --- State สำหรับการเลือกแผนที่ ---
   LatLng? _selectedLocation;
   // -----------------------------
 
@@ -335,7 +336,7 @@ class _AddAddressSheetState extends State<_AddAddressSheet> {
                 _deco('ชื่อกำกับ (เช่น บ้าน, ที่ทำงาน)', Icons.label_outlined),
           ),
           const SizedBox(height: 10),
-          // --- Add "Select from Map" Button ---
+          // --- เพิ่มปุ่ม "เลือกจากแผนที่" ---
           TextButton.icon(
             icon: const Icon(Icons.map_outlined, color: Color(0xFFFD8700)),
             label: const Text('เลือกจากแผนที่',
@@ -413,9 +414,9 @@ class _AddAddressSheetState extends State<_AddAddressSheet> {
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
       );
 
-  // --- Logic for Map Selection ---
+  // --- โลจิกสำหรับการเลือกแผนที่ ---
   Future<void> _selectFromMap() async {
-    // 1. Check/request permissions
+    // 1. ตรวจสอบ/ขอสิทธิ์
     LocationPermission permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
@@ -433,29 +434,29 @@ class _AddAddressSheetState extends State<_AddAddressSheet> {
       return;
     }
 
-    // 2. Get current location to center the map
+    // 2. ดึงตำแหน่งปัจจุบันเพื่อจัดกลางแผนที่
     Position? currentLocation;
     try {
       currentLocation = await Geolocator.getCurrentPosition(
           desiredAccuracy: LocationAccuracy.medium);
     } catch (e) {
-      // Could fail if location services are off
+      // อาจล้มเหลวหากปิดบริการตำแหน่ง
       debugPrint('Error getting location: $e');
     }
 
-    // 3. Navigate to MapSelectionPage
+    // 3. นำทางไปยัง MapSelectionPage
     if (!mounted) return;
     final result = await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => MapSelectionPage(
           initialLocation: currentLocation != null
               ? LatLng(currentLocation.latitude, currentLocation.longitude)
-              : const LatLng(13.7563, 100.5018), // Default to Bangkok
+              : const LatLng(13.7563, 100.5018), // ค่าเริ่มต้นคือกรุงเทพฯ
         ),
       ),
     );
 
-    // 4. Handle result
+    // 4. จัดการผลลัพธ์
     if (result is Map<String, dynamic>) {
       final LatLng location = result['location'];
       final String address = result['address'];
@@ -467,7 +468,7 @@ class _AddAddressSheetState extends State<_AddAddressSheet> {
     }
   }
 
-  // --- MODIFIED Save Function ---
+  // --- ฟังก์ชัน _save ที่แก้ไขแล้ว ---
   Future<void> _save() async {
     final nameLabel = _label.text.trim();
     final addressText = _detail.text.trim();
@@ -482,29 +483,29 @@ class _AddAddressSheetState extends State<_AddAddressSheet> {
     setState(() => _saving = true);
 
     try {
-      // --- New Logic ---
+      // --- โลจิกใหม่ ---
       double? lat;
       double? lng;
 
       if (_selectedLocation != null) {
-        // Location was picked from map
+        // ตำแหน่งถูกเลือกจากแผนที่
         lat = _selectedLocation!.latitude;
         lng = _selectedLocation!.longitude;
       } else {
-        // Location was typed, use geocoder
+        // ตำแหน่งถูกพิมพ์, ใช้ geocoder
         final pos = await widget.geocoder.geocode(addressText);
         lat = pos.lat;
         lng = pos.lng;
       }
-      // --- End of New Logic ---
+      // --- จบโลจิกใหม่ ---
 
       final model = UserAddress(
         id: '_new_',
         userId: widget.uid,
         nameLabel: nameLabel,
         addressText: addressText,
-        lat: lat, // Use the resolved lat
-        lng: lng, // Use the resolved lng
+        lat: lat, // ใช้ lat ที่ได้มา
+        lng: lng, // ใช้ lng ที่ได้มา
         isDefault: false,
       );
 
@@ -512,7 +513,7 @@ class _AddAddressSheetState extends State<_AddAddressSheet> {
         ..addAll({
           'phone': phone,
           if (lat != null && lng != null) ...{
-            // Check resolved lat/lng
+            // ตรวจสอบ lat/lng ที่ได้มา
             'lat': lat,
             'lng': lng,
             'geopoint': GeoPoint(lat, lng),
@@ -528,7 +529,7 @@ class _AddAddressSheetState extends State<_AddAddressSheet> {
       if (!mounted) return;
       Navigator.of(context).pop({
         'added': true,
-        'latFound': lat != null, // Use resolved lat
+        'latFound': lat != null, // ใช้ lat ที่ได้มา
       });
     } catch (e) {
       Get.snackbar('ผิดพลาด', '$e',
@@ -541,7 +542,7 @@ class _AddAddressSheetState extends State<_AddAddressSheet> {
   }
 }
 
-// ---------- NEW: Map Selection Page ----------
+// ---------- ใหม่: หน้าเลือกแผนที่ ----------
 
 class MapSelectionPage extends StatefulWidget {
   const MapSelectionPage({Key? key, required this.initialLocation})
@@ -558,7 +559,7 @@ class _MapSelectionPageState extends State<MapSelectionPage> {
   late final Set<Marker> _markers;
   bool _isConfirming = false;
 
-  // --- 1. New State Variables ---
+  // --- 1. ตัวแปร State ใหม่ ---
   String _currentAddressText = 'กำลังค้นหาที่อยู่...';
   bool _isGeocoding = false;
   // ------------------------------
@@ -576,12 +577,12 @@ class _MapSelectionPageState extends State<MapSelectionPage> {
           setState(() {
             _selectedLocation = newPosition;
           });
-          // --- 3. Call update function on Drag End ---
+          // --- 3. เรียกฟังก์ชันอัปเดตเมื่อลากเสร็จ ---
           _updateAddressFromLocation(newPosition);
         },
       ),
     };
-    // --- 3. Call update function on Init ---
+    // --- 3. เรียกฟังก์ชันอัปเดตตอนเริ่มต้น ---
     _updateAddressFromLocation(_selectedLocation);
   }
 
@@ -596,19 +597,50 @@ class _MapSelectionPageState extends State<MapSelectionPage> {
           draggable: true,
           onDragEnd: (newPosition) {
             setState(() => _selectedLocation = newPosition);
-            // --- 3. Call update function on Drag End (for new marker) ---
+            // --- 3. เรียกฟังก์ชันอัปเดตเมื่อลากเสร็จ (สำหรับ marker ใหม่) ---
             _updateAddressFromLocation(newPosition);
           },
         ),
       );
     });
-    // --- 3. Call update function on Map Tap ---
+    // --- 3. เรียกฟังก์ชันอัปเดตเมื่อแตะแผนที่ ---
     _updateAddressFromLocation(location);
   }
 
-  // --- 2. New Function to Handle Geocoding ---
+  Future<String?> reverseByPlugin(double lat, double lng) async {
+    try {
+      final placemarks = await placemarkFromCoordinates(
+        lat,
+        lng,
+        localeIdentifier: 'th_TH',
+      );
+      if (placemarks.isEmpty) return null;
+      final p = placemarks.first;
+
+      // ประกอบเป็นสตริงไทยสวย ๆ
+      final parts = [
+        p.name, // จุดสังเกต/สถานที่
+        p.street, // ถนน/ตรอก
+        p.subLocality, // แขวง/ตำบล
+        p.locality, // เขต/อำเภอ
+        p.administrativeArea, // จังหวัด
+        p.postalCode,
+        p.country,
+      ]
+          .where((e) => e != null && e.toString().trim().isNotEmpty)
+          .map((e) => e.toString().trim())
+          .toList();
+
+      return parts.join(', ');
+    } catch (e) {
+      debugPrint('reverseByPlugin err: $e');
+      return null;
+    }
+  }
+
+  // --- 2. ฟังก์ชันใหม่สำหรับ Geocoding ---
   Future<void> _updateAddressFromLocation(LatLng location) async {
-    if (_isGeocoding) return; // Prevent multiple simultaneous requests
+    if (_isGeocoding) return; // ป้องกันการเรียกซ้ำซ้อน
 
     setState(() {
       _isGeocoding = true;
@@ -616,47 +648,50 @@ class _MapSelectionPageState extends State<MapSelectionPage> {
     });
 
     try {
-      List<Placemark> placemarks = await placemarkFromCoordinates(
+      final placemarks = await placemarkFromCoordinates(
         location.latitude,
         location.longitude,
-        localeIdentifier: 'th_TH', // Request Thai locale
+        localeIdentifier: 'th',
       );
+      final addressInThai = await reverseByPlugin(
+        location.latitude,
+        location.longitude,
+      );
+      log(addressInThai.toString());
 
       String address = 'ไม่พบที่อยู่';
       if (placemarks.isNotEmpty) {
         final p = placemarks.first;
 
-        // --- [START] REVISED THAI ADDRESS CONSTRUCTION ---
-        // We build the address manually to avoid repetition
+        // --- [เริ่ม] การสร้างที่อยู่ภาษาไทยแบบปรับปรุง ---
+        // เราสร้างที่อยู่เองเพื่อหลีกเลี่ยงการซ้ำซ้อน
 
-        // 1. Name/POI
-        String namePart = p.name ?? ''; // e.g., "หอพักพรทิพย์"
+        // 1. ชื่อ/สถานที่
+        String namePart = p.name ?? ''; // เช่น "หอพักพรทิพย์"
 
-        // 2. Street number and street name
-        String streetNumberPart = p.subThoroughfare ?? ''; // e.g., "928 1"
-        String streetNamePart =
-            p.thoroughfare ?? ''; // e.g., "Tha Khon Yang" (ถนน)
+        // 2. บ้านเลขที่และชื่อถนน
+        String streetNumberPart = p.subThoroughfare ?? ''; // เช่น "928 1"
+        String streetNamePart = p.thoroughfare ?? ''; // เช่น "ท่าขอนยาง" (ถนน)
 
-        // Combine street parts
+        // รวมส่วนของถนน
         String streetFullPart = '$streetNumberPart $streetNamePart'.trim();
 
-        // 3. Admin levels
-        String subLocalityPart =
-            p.subLocality ?? ''; // e.g., "Tha Khon Yang" (ตำบล)
+        // 3. ระดับการปกครอง
+        String subLocalityPart = p.subLocality ?? ''; // เช่น "ท่าขอนยาง" (ตำบล)
         String localityPart =
-            p.locality ?? ''; // e.g., "Amphoe Kantharawichai" (อำเภอ)
-        String adminAreaPart = p.administrativeArea ??
-            ''; // e.g., "Chang Wat Maha Sarakham" (จังหวัด)
-        String postalCodePart = p.postalCode ?? ''; // e.g., "44150"
+            p.locality ?? ''; // เช่น "อำเภอกันทรวิชัย" (อำเภอ)
+        String adminAreaPart =
+            p.administrativeArea ?? ''; // เช่น "จังหวัดมหาสารคาม" (จังหวัด)
+        String postalCodePart = p.postalCode ?? ''; // เช่น "44150"
 
-        // 4. Combine all parts, checking for duplicates
+        // 4. รวมทุกส่วน, ตรวจสอบข้อมูลซ้ำ
         List<String> parts = [namePart];
 
         if (streetFullPart.isNotEmpty && streetFullPart != namePart) {
           parts.add(streetFullPart);
         }
 
-        // If street name is different from subLocality, add subLocality
+        // ถ้าชื่อถนนต่างจากตำบล, ให้เพิ่มตำบล
         if (subLocalityPart.isNotEmpty && subLocalityPart != streetNamePart) {
           parts.add(subLocalityPart);
         }
@@ -666,7 +701,7 @@ class _MapSelectionPageState extends State<MapSelectionPage> {
         parts.add(postalCodePart);
 
         address = parts.where((s) => s.isNotEmpty).join(', ');
-        // --- [END] REVISED THAI ADDRESS CONSTRUCTION ---
+        // --- [จบ] การสร้างที่อยู่ภาษาไทยแบบปรับปรุง ---
       }
 
       if (mounted) {
@@ -689,15 +724,15 @@ class _MapSelectionPageState extends State<MapSelectionPage> {
   }
   // ------------------------------------------
 
-  // --- 5. Simplified _confirmSelection ---
+  // --- 5. ฟังก์ชัน _confirmSelection แบบง่าย ---
   Future<void> _confirmSelection() async {
     setState(() => _isConfirming = true);
 
-    // No need to geocode here, just pop the state
+    // ไม่ต้อง geocode ที่นี่, แค่ pop state กลับไป
     if (mounted) {
       Navigator.of(context).pop({
         'location': _selectedLocation,
-        'address': _currentAddressText, // Pop the current address text
+        'address': _currentAddressText, // ส่งข้อความที่อยู่ปัจจุบันกลับไป
       });
     }
   }
@@ -731,7 +766,7 @@ class _MapSelectionPageState extends State<MapSelectionPage> {
             zoomControlsEnabled: true, // เปิดปุ่มซูม
             // --------------------
           ),
-          // --- 4. Add Address Display ---
+          // --- 4. เพิ่มการแสดงผลที่อยู่ ---
           Positioned(
             top: 16,
             left: 16,
@@ -771,12 +806,12 @@ class _MapSelectionPageState extends State<MapSelectionPage> {
             child: SizedBox(
               height: 50,
               child: FloatingActionButton.extended(
-                // Disable button while geocoding or confirming
+                // ปิดการใช้งานปุ่มขณะกำลัง geocode หรือยืนยัน
                 onPressed:
                     (_isConfirming || _isGeocoding) ? null : _confirmSelection,
                 label: _isConfirming
                     ? const CircularProgressIndicator(color: Colors.white)
-                    : (_isGeocoding // Show loading text if geocoding
+                    : (_isGeocoding // แสดงข้อความกำลังโหลดถ้ากำลัง geocode
                         ? const Text(
                             'กำลังค้นหา...',
                             style: TextStyle(color: Colors.white, fontSize: 16),
@@ -784,7 +819,7 @@ class _MapSelectionPageState extends State<MapSelectionPage> {
                         : const Text('ยืนยันตำแหน่งนี้',
                             style:
                                 TextStyle(color: Colors.white, fontSize: 16))),
-                icon: (_isConfirming || _isGeocoding) // Hide icon when loading
+                icon: (_isConfirming || _isGeocoding) // ซ่อนไอคอนขณะโหลด
                     ? null
                     : const Icon(Icons.check, color: Colors.white),
                 backgroundColor: const Color(0xFFFD8700),

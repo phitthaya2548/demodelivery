@@ -70,9 +70,8 @@ class SelectMemberTypePage extends StatelessWidget {
       Get.to(() => RegisterRider());
     }
 
-/*************  ✨ Windsurf Command ⭐  *************/
-    /// ไปยังหน้าสมัครไรเดอร์
-/*******  77bcff55-54c5-4eea-b004-a341335269e3  *******/ void goBack() {
+
+ void goBack() {
       if (Navigator.of(context).canPop()) {
         Navigator.of(context).pop();
       }

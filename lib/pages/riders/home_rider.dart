@@ -1,7 +1,6 @@
 // lib/pages/riders/home_rider.dart
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:deliverydomo/pages/riders/detail_shipments.dart';
-import 'package:deliverydomo/pages/riders/map_rider.dart';
 import 'package:deliverydomo/pages/riders/widgets/appbar.dart';
 import 'package:deliverydomo/pages/riders/widgets/bottom.dart';
 import 'package:deliverydomo/pages/sesstion.dart';
@@ -32,28 +31,26 @@ class _HomeRiderState extends State<HomeRider> {
   }
 
   Future<void> _accept(String shipmentId) async {
-  final riderId = _riderId;
-  if (riderId.isEmpty) {
-    Get.snackbar('รับงานไม่ได้', 'ยังไม่พบรหัสไรเดอร์ในเซสชัน',
-        snackPosition: SnackPosition.BOTTOM);
-    return;
+    final riderId = _riderId;
+    if (riderId.isEmpty) {
+      Get.snackbar('รับงานไม่ได้', 'ยังไม่พบรหัสไรเดอร์ในเซสชัน',
+          snackPosition: SnackPosition.BOTTOM);
+      return;
+    }
+    try {
+      await _api.acceptShipment(riderId: riderId, shipmentId: shipmentId);
+
+      Get.offAll(() => const BottomRider(initialIndex: 2));
+
+      Get.snackbar('สำเร็จ', 'รับงานเรียบร้อย',
+          snackPosition: SnackPosition.BOTTOM);
+    } catch (e) {
+      Get.snackbar('รับงานไม่สำเร็จ', '$e',
+          snackPosition: SnackPosition.BOTTOM,
+          backgroundColor: Colors.red[400],
+          colorText: Colors.white);
+    }
   }
-  try {
-    await _api.acceptShipment(riderId: riderId, shipmentId: shipmentId);
-
-    
-    Get.offAll(() => const BottomRider(initialIndex: 2));
-
-    Get.snackbar('สำเร็จ', 'รับงานเรียบร้อย',
-        snackPosition: SnackPosition.BOTTOM);
-  } catch (e) {
-    Get.snackbar('รับงานไม่สำเร็จ', '$e',
-        snackPosition: SnackPosition.BOTTOM,
-        backgroundColor: Colors.red[400],
-        colorText: Colors.white);
-  }
-}
-
 
   Future<void> _completeOrCancel(String shipmentId,
       {required bool complete}) async {
