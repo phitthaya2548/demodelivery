@@ -1,9 +1,12 @@
+// lib/pages/register_rider.dart  (เปลี่ยนชื่อไฟล์ตามที่คุณใช้จริง)
+// ปรับ import ให้ตรงกับไฟล์ API: firebase_rider_api.dart
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:deliverydomo/pages/login.dart';
 import 'package:deliverydomo/services/firebase_rider.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:image_picker/image_picker.dart';
@@ -29,7 +32,9 @@ class _RegisterRiderState extends State<RegisterRider> {
 
   final _api = FirebaseRiderApi();
 
+  // เก็บเฉพาะตัวเลข เพื่อคง leading zero และไม่เอาอักขระอื่น ๆ
   String _normalizePhone(String s) => s.replaceAll(RegExp(r'\D'), '');
+  // hash = sha256(phone::password) ให้ deterministic ต่อเบอร์
   String _hashPasswordNoSalt(String password, String phone) =>
       sha256.convert(utf8.encode('$phone::$password')).toString();
 
@@ -53,6 +58,10 @@ class _RegisterRiderState extends State<RegisterRider> {
   }
 
   Future<void> _selectImage({required bool forAvatar}) async {
+    if (kIsWeb) {
+      _toast('ตอนนี้ยังไม่รองรับเลือกไฟล์/ถ่ายรูปบนเว็บ');
+      return;
+    }
     final src = await _chooseImageSource();
     if (src == null) return;
 
@@ -149,7 +158,9 @@ class _RegisterRiderState extends State<RegisterRider> {
                   padding: const EdgeInsets.symmetric(vertical: 12),
                 ),
                 onPressed: () {
-                  Get.to(() => const LoginPage());
+                  // กลับไปหน้า Login แบบปิด dialog และกันซ้อนเส้นทาง
+                  Get.back(); // ปิด dialog
+                  Get.off(() => const LoginPage());
                 },
                 child:
                     const Text('ตกลง', style: TextStyle(color: Colors.white)),
@@ -163,11 +174,12 @@ class _RegisterRiderState extends State<RegisterRider> {
   }
 
   Future<void> _submit() async {
+    if (_loading) return; // กันกดซ้ำ
     if (!(_formKey.currentState?.validate() ?? false)) return;
 
     final phone = _normalizePhone(_tel.text.trim());
     final name = _name.text.trim();
-    final pass = _pass.text.trim();
+    final pass = _pass.text;
     final plate = _plate.text.trim();
 
     if (_avatarFile == null) {
@@ -198,7 +210,7 @@ class _RegisterRiderState extends State<RegisterRider> {
       );
     } on FirebaseRiderApiError catch (e) {
       if (e.code == 'PHONE_TAKEN') {
-        _toast('เบอร์นี้ถูกสมัครแล้ว');
+        _toast('เบอร์นี้ถูกสมัครแล้ว (ในฝั่งไรเดอร์)');
       } else {
         _toast('สมัครไม่สำเร็จ: ${e.code}');
       }
@@ -264,6 +276,7 @@ class _RegisterRiderState extends State<RegisterRider> {
                     padding: const EdgeInsets.all(20),
                     child: Form(
                       key: _formKey,
+                      autovalidateMode: AutovalidateMode.onUserInteraction,
                       child: Column(
                         children: [
                           const SizedBox(height: 8),
@@ -369,7 +382,7 @@ class _RegisterRiderState extends State<RegisterRider> {
                           ),
                           const SizedBox(height: 12),
 
-                          // Vehicle doc/photo picker block (มีปุ่มเลือก กล้อง/คลัง)
+                          // Vehicle doc/photo picker block
                           Container(
                             width: double.infinity,
                             padding: const EdgeInsets.all(12),

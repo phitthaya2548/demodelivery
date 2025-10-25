@@ -1,4 +1,3 @@
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:deliverydomo/pages/riders/widgets/appbar.dart';
 import 'package:deliverydomo/pages/sesstion.dart';
@@ -672,7 +671,6 @@ class _OrderList extends StatelessWidget {
                                   ),
                                 ),
 
-                                
                                 const Padding(
                                   padding: EdgeInsets.fromLTRB(20, 14, 20, 6),
                                   child: Text(
@@ -685,7 +683,6 @@ class _OrderList extends StatelessWidget {
                                 ),
                                 const SizedBox(height: 8),
 
-                                
                                 Padding(
                                   padding:
                                       const EdgeInsets.fromLTRB(16, 0, 16, 16),
@@ -792,7 +789,13 @@ class _OrderList extends StatelessWidget {
                     badgeColor: _badgeColor(st),
                     photoUrl: photoUrl,
                     updatedText: _fmtTime(updatedAt),
-                    onFollow: () => Get.to(() => FollowItem(shipmentId: d.id)),
+                    onFollow: () => Get.to(
+                      () => FollowItem(
+                        shipmentId: d.id,
+                        initialTabIndex:
+                            isSenderSide ? 0 : 1, // 0=ส่งของ, 1=รับของ
+                      ),
+                    ),
                   ),
                 );
               },
@@ -1020,7 +1023,6 @@ class _OrderCard extends StatelessWidget {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          
                           Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
@@ -1066,8 +1068,6 @@ class _OrderCard extends StatelessWidget {
                               ),
                             ],
                           ),
-
-                          
                           if (itemDes.isNotEmpty) ...[
                             const SizedBox(height: 8),
                             Container(
@@ -1194,7 +1194,6 @@ class _OrderCard extends StatelessWidget {
                   ),
                 ),
 
-                
                 if (riderName.isNotEmpty ||
                     riderPhone.isNotEmpty ||
                     riderPlate.isNotEmpty) ...[
@@ -1307,7 +1306,6 @@ class _OrderCard extends StatelessWidget {
 
                 const SizedBox(height: 16),
 
-                
                 Container(
                   width: double.infinity,
                   height: 52,

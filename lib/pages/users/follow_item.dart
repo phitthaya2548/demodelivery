@@ -11,7 +11,13 @@ import 'package:http/http.dart' as http;
 
 class FollowItem extends StatefulWidget {
   final String shipmentId;
-  const FollowItem({Key? key, required this.shipmentId}) : super(key: key);
+  final int? initialTabIndex;
+
+  const FollowItem({
+    Key? key,
+    required this.shipmentId,
+    this.initialTabIndex,
+  }) : super(key: key);
 
   @override
   State<FollowItem> createState() => _FollowItemState();
@@ -41,7 +47,7 @@ class _FollowItemState extends State<FollowItem> with TickerProviderStateMixin {
   GoogleMapController? _mapController;
 
   List<LatLng> points = [];
-  int _currentTabIndex = 0; // 0 = ส่งของ, 1 = รับของ
+  int _currentTabIndex = 0;
 
   @override
   void initState() {
@@ -51,9 +57,18 @@ class _FollowItemState extends State<FollowItem> with TickerProviderStateMixin {
       vsync: this,
       duration: const Duration(milliseconds: 300),
     )..forward();
-    _tabController = TabController(length: 2, vsync: this);
+
+    final startIndex = (widget.initialTabIndex ?? 0).clamp(0, 1);
+    _currentTabIndex = startIndex;
+
+    _tabController = TabController(
+      length: 2,
+      vsync: this,
+      initialIndex: startIndex,
+    );
+
     _tabController.addListener(() {
-      if (_tabController.indexIsChanging) {
+      if (!_tabController.indexIsChanging) {
         setState(() {
           _currentTabIndex = _tabController.index;
         });

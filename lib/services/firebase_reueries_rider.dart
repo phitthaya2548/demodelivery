@@ -4,8 +4,6 @@ import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 
-
-
 class GeoCoord {
   final double lat;
   final double lng;
@@ -25,7 +23,7 @@ class ResolvedShipment {
   final String senderAddressText;
   final GeoCoord? senderGeo;
 
-
+  // Receiver
   final String receiverName;
   final String receiverPhone;
   final String receiverAddressText;
@@ -48,7 +46,6 @@ class ResolvedShipment {
   });
 }
 
-
 class FirebaseRiderRepository {
   FirebaseRiderRepository({
     FirebaseFirestore? firestore,
@@ -59,12 +56,13 @@ class FirebaseRiderRepository {
   final FirebaseFirestore _fs;
   final FirebaseStorage _st;
 
-  static const String kAvatarUrlField = 'photoUrl';
+  // ใช้ avatarUrl เป็นคีย์มาตรฐาน และรองรับของเก่าเป็น legacy
+  static const String kAvatarUrlField = 'avatarUrl';
   static const String kAvatarVersionField = 'avatarVersion'; // epoch ms
   static const List<String> _legacyAvatarFields = [
     'photoUrl',
     'avatar_url',
-    'photo_url'
+    'photo_url',
   ];
 
   String _urlWithVersion(String url, Object? version) {
@@ -74,15 +72,11 @@ class FirebaseRiderRepository {
     return url.contains('?') ? '$url&v=$v' : '$url?v=$v';
   }
 
+  // ✅ เก็บ/ค้นหาเป็น “ตัวเลขล้วน” เพื่อให้ตรงกับ users.phone ที่มักเก็บแบบนี้
   String _normalizePhone(String phone) {
     final raw = phone.trim();
     if (raw.isEmpty) return '';
-    final digits = raw.replaceAll(RegExp(r'[^\d+]'), '');
-    if (digits.startsWith('0') && digits.length >= 9) {
-      // ปรับตาม schema ที่คุณใช้ (ตัวอย่าง: ไทย)
-      return '+66${digits.substring(1)}';
-    }
-    return digits;
+    return raw.replaceAll(RegExp(r'\D'), '');
   }
 
   Map<String, dynamic> _asMap(dynamic v) {
@@ -176,6 +170,7 @@ class FirebaseRiderRepository {
     return (m['address_text'] ?? m['detail'] ?? '').toString();
   }
 
+  /// รวมข้อมูล shipment ให้พร้อมแสดงในหน้าไรเดอร์ (ทน null/type และกัน stream ตาย)
   Stream<List<ResolvedShipment>> watchShipmentsOfRiderResolved({
     required String riderId,
     List<int>? statusIn,
@@ -189,93 +184,118 @@ class FirebaseRiderRepository {
 
     return base.asyncMap((docs) async {
       final futures = docs.map((d) async {
-        final m = d.data();
+        try {
+          final m = d.data();
 
-        final id = (m['id'] ?? d.id).toString();
-        final itemName = (m['item_name'] ?? '-').toString();
-        final itemDesc = (m['item_description'] ?? '').toString();
+          final id = (m['id'] ?? d.id).toString();
+          final itemName = (m['item_name'] ?? '-').toString();
+          final itemDesc = (m['item_description'] ?? '').toString();
 
-        // อย่าฟอลแบ็กไปใช้ last_proof_url กับรูปสินค้า
-        final photoUrl = (m['item_photo_url'] ??
-                m['product_photo_url'] ??
-                m['last_photo_url'] ??
-                '')
-            .toString();
+          // อย่าฟอลแบ็กไป last_proof_url; ใช้รูปสินค้าจริงเท่านั้น
+          final photoUrl = (m['item_photo_url'] ??
+                  m['product_photo_url'] ??
+                  m['last_photo_url'] ??
+                  '')
+              .toString();
 
-        final s = m['status'];
-        final statusVal = (s is int) ? s : int.tryParse('$s') ?? 0;
+          final s = m['status'];
+          final statusVal = (s is int) ? s : int.tryParse('$s') ?? 0;
 
-        final sender = _asMap(m['sender_snapshot']);
-        final receiver = _asMap(m['receiver_snapshot']);
-        final deliverySnap = _asMap(m['delivery_address_snapshot']);
+          final sender = _asMap(m['sender_snapshot']);
+          final receiver = _asMap(m['receiver_snapshot']);
+          final deliverySnap = _asMap(m['delivery_address_snapshot']);
 
-        final sName = (sender['name'] ?? '').toString();
-        final sPhone = (sender['phone'] ?? '').toString();
-        final sPickup = _asMap(sender['pickup_address']);
-        final sAddrImmediate = (sPickup['detail'] ??
-                sPickup['address_text'] ??
-                _asMap(sender['address'])['address_text'] ??
-                '')
-            .toString();
-        final sPickupId =
-            (sender['pickup_address_id'] ?? m['pickup_address_id'] ?? '')
-                .toString();
+          final sName = (sender['name'] ?? '').toString();
+          final sPhone = (sender['phone'] ?? '').toString();
 
-        GeoCoord? senderGeo = _extractGeo(
-            sPickup['location'] ?? sPickup['geopoint'] ?? sPickup['geo']);
+          final sPickup = _asMap(sender['pickup_address']);
+          final sAddrImmediate = (sPickup['detail'] ??
+                  sPickup['address_text'] ??
+                  _asMap(sender['address'])['address_text'] ??
+                  '')
+              .toString();
+          final sPickupId =
+              (sender['pickup_address_id'] ?? m['pickup_address_id'] ?? '')
+                  .toString();
 
-        final rName = (receiver['name'] ?? '').toString();
-        final rPhone = (receiver['phone'] ?? '').toString();
-        final rAddrImmediate = (deliverySnap['detail'] ??
-                deliverySnap['address_text'] ??
-                _asMap(receiver['address'])['address_text'] ??
-                '')
-            .toString();
-        final rAddrId =
-            (receiver['address_id'] ?? m['delivery_address_id'] ?? '')
-                .toString();
+          GeoCoord? senderGeo = _extractGeo(
+              sPickup['location'] ?? sPickup['geopoint'] ?? sPickup['geo']);
 
-        GeoCoord? receiverGeo = _extractGeo(
-          deliverySnap['location'] ??
-              deliverySnap['geopoint'] ??
-              deliverySnap['geo'],
-        );
+          final rName = (receiver['name'] ?? '').toString();
+          final rPhone = (receiver['phone'] ?? '').toString();
 
-        final senderAddressText = (sAddrImmediate.isNotEmpty)
-            ? sAddrImmediate
-            : await loadAddressTextById(sPickupId);
-        final receiverAddressText = (rAddrImmediate.isNotEmpty)
-            ? rAddrImmediate
-            : await loadAddressTextById(rAddrId);
+          final rAddrImmediate = (deliverySnap['detail'] ??
+                  deliverySnap['address_text'] ??
+                  _asMap(receiver['address'])['address_text'] ??
+                  '')
+              .toString();
+          final rAddrId =
+              (receiver['address_id'] ?? m['delivery_address_id'] ?? '')
+                  .toString();
 
-        if (senderGeo == null && sPickupId.isNotEmpty) {
-          final snap = await _fs.collection('addressuser').doc(sPickupId).get();
-          final mm = snap.data() ?? {};
-          senderGeo =
-              _extractGeo(mm['geopoint'] ?? mm['location'] ?? mm['geo']);
+          GeoCoord? receiverGeo = _extractGeo(
+            deliverySnap['location'] ??
+                deliverySnap['geopoint'] ??
+                deliverySnap['geo'],
+          );
+
+          final senderAddressText = (sAddrImmediate.isNotEmpty)
+              ? sAddrImmediate
+              : await loadAddressTextById(sPickupId);
+
+          final receiverAddressText = (rAddrImmediate.isNotEmpty)
+              ? rAddrImmediate
+              : await loadAddressTextById(rAddrId);
+
+          if (senderGeo == null && sPickupId.isNotEmpty) {
+            final snap =
+                await _fs.collection('addressuser').doc(sPickupId).get();
+            final mm = snap.data() ?? {};
+            senderGeo =
+                _extractGeo(mm['geopoint'] ?? mm['location'] ?? mm['geo']);
+          }
+          if (receiverGeo == null && rAddrId.isNotEmpty) {
+            final snap = await _fs.collection('addressuser').doc(rAddrId).get();
+            final mm = snap.data() ?? {};
+            receiverGeo =
+                _extractGeo(mm['geopoint'] ?? mm['location'] ?? mm['geo']);
+          }
+
+          return ResolvedShipment(
+            id: id,
+            status: statusVal,
+            itemName: itemName,
+            itemDesc: itemDesc,
+            photoUrl: photoUrl,
+            senderName: sName,
+            senderPhone: sPhone,
+            senderAddressText: senderAddressText,
+            senderGeo: senderGeo,
+            receiverName: rName,
+            receiverPhone: rPhone,
+            receiverAddressText: receiverAddressText,
+            receiverGeo: receiverGeo,
+          );
+        } catch (e) {
+          // กัน stream ตาย: คืน placeholder
+          // ignore: avoid_print
+          print('ResolvedShipment parse error for ${d.id}: $e');
+          return ResolvedShipment(
+            id: d.id,
+            status: 0,
+            itemName: '-',
+            itemDesc: '',
+            photoUrl: '',
+            senderName: '',
+            senderPhone: '',
+            senderAddressText: '',
+            senderGeo: null,
+            receiverName: '',
+            receiverPhone: '',
+            receiverAddressText: '',
+            receiverGeo: null,
+          );
         }
-        if (receiverGeo == null && rAddrId.isNotEmpty) {
-          final snap = await _fs.collection('addressuser').doc(rAddrId).get();
-          final mm = snap.data() ?? {};
-          receiverGeo =
-              _extractGeo(mm['geopoint'] ?? mm['location'] ?? mm['geo']);
-        }
-
-        return ResolvedShipment(
-          id: id,
-          status: statusVal,
-          itemName: itemName,
-          itemDesc: itemDesc,
-          photoUrl: photoUrl,
-          senderName: sName,
-          senderPhone: sPhone,
-          senderAddressText: senderAddressText,
-          senderGeo: senderGeo,
-          receiverName: rName,
-          receiverPhone: rPhone,
-          receiverAddressText: receiverAddressText,
-          receiverGeo: receiverGeo,
-        );
       }).toList();
 
       return await Future.wait(futures);
@@ -304,6 +324,8 @@ class FirebaseRiderRepository {
   // ---------------------------------------------------------------------------
   // Mutations
   // ---------------------------------------------------------------------------
+
+  /// ✅ รับงานแบบ Transaction + ฝัง rider_snapshot ลง shipment
   Future<void> acceptShipment({
     required String riderId,
     required String shipmentId,
@@ -326,6 +348,13 @@ class FirebaseRiderRepository {
       final status = (s is int) ? s : int.tryParse('$s') ?? 0;
       if (status != 1) throw Exception('งานนี้ถูกคนอื่นรับไปแล้ว');
 
+      // snapshot ข้อมูลไรเดอร์ เพื่อให้หน้า "งานที่ล็อก" อ่านได้ทันที
+      final riderName = (riderData['name'] ?? '').toString();
+      final riderPhone = (riderData['phoneNumber'] ?? '').toString();
+      final riderAvatar =
+          (riderData['avatarUrl'] ?? riderData['photoUrl'] ?? '').toString();
+      final riderPlate = (riderData['plateNumber'] ?? '').toString();
+
       tx.set(
         riderRef,
         {
@@ -334,9 +363,18 @@ class FirebaseRiderRepository {
         },
         SetOptions(merge: true),
       );
+
       tx.update(shipRef, {
         'status': 2,
         'rider_id': riderId,
+        'rider_snapshot': {
+          'id': riderId,
+          'name': riderName,
+          'phone': riderPhone,
+          'avatarUrl': riderAvatar,
+          'plateNumber': riderPlate,
+          'lockedAt': FieldValue.serverTimestamp(),
+        },
         'updated_at': FieldValue.serverTimestamp(),
       });
     });
@@ -349,7 +387,6 @@ class FirebaseRiderRepository {
     required int toStatus,
     File? proofFile,
   }) async {
-
     String? proofUrl;
     if (proofFile != null) {
       proofUrl = await uploadProofPhoto(
@@ -387,7 +424,7 @@ class FirebaseRiderRepository {
         'updated_at': FieldValue.serverTimestamp(),
       };
 
-      // ✅ อัปเดตเฉพาะ last_proof_url / last_proof_uploaded_at
+      // เก็บเฉพาะ last_proof_* (ไม่ไปแตะรูปสินค้า)
       if (proofUrl != null && proofUrl.isNotEmpty) {
         update.addAll({
           'last_proof_url': proofUrl,
@@ -465,7 +502,7 @@ class FirebaseRiderRepository {
     );
     final url = await snap.ref.getDownloadURL();
 
-    // เก็บรูปเป็น document แยกใน subcollection Shipment_Photo
+    // เก็บเป็น document แยกใน subcollection
     await _fs
         .collection('shipments')
         .doc(shipmentId)
@@ -479,7 +516,7 @@ class FirebaseRiderRepository {
       'type': 'proof',
     });
 
-    // ❗️อัปเดตเฉพาะ last_proof_* (ไม่แตะ last_photo_url ที่เป็น “รูปสินค้า”)
+    // อัปเดตเฉพาะ last_proof_* (ไม่แตะรูปสินค้า)
     if (updateFields) {
       await _fs.collection('shipments').doc(shipmentId).set({
         'last_proof_url': url,
@@ -491,8 +528,10 @@ class FirebaseRiderRepository {
     return url;
   }
 
- 
-  final Map<String, String> _avatarCache = {}; 
+  // ---------------------------------------------------------------------------
+  // User avatar helpers (ฝั่ง USERS เท่านั้น)
+  // ---------------------------------------------------------------------------
+  final Map<String, String> _avatarCache = {};
 
   Future<DocumentSnapshot<Map<String, dynamic>>> _getUserDoc(
     String uid, {
@@ -505,7 +544,7 @@ class FirebaseRiderRepository {
     return ref.get();
   }
 
-  /// อัปโหลด avatar ใหม่ (ตั้งชื่อไฟล์ใหม่ + ปิด cache) และอัปเดต users/<uid>
+  /// อัปโหลด avatar ใหม่ → users/<uid>
   Future<String> updateUserAvatar({
     required String uid,
     required File file,
@@ -525,7 +564,7 @@ class FirebaseRiderRepository {
     final url = await snap.ref.getDownloadURL();
 
     await _fs.collection('users').doc(uid).set({
-      kAvatarUrlField: url,
+      kAvatarUrlField: url, // => 'avatarUrl'
       kAvatarVersionField: now,
       'updated_at': FieldValue.serverTimestamp(),
     }, SetOptions(merge: true));
@@ -535,7 +574,6 @@ class FirebaseRiderRepository {
 
     return _urlWithVersion(url, now);
   }
-
 
   Future<String> fetchUserPhotoByUid(String uid,
       {bool forceServer = false}) async {
@@ -571,7 +609,7 @@ class FirebaseRiderRepository {
         return fetchUserPhotoByUid(uid, forceServer: forceServer);
       }
 
-      // 2) fallback: query users by phone
+      // 2) fallback: query users by phone (เลขล้วน)
       final q = await _fs
           .collection('users')
           .where('phone', isEqualTo: p)
@@ -584,7 +622,7 @@ class FirebaseRiderRepository {
         return _urlWithVersion(url, ver);
       }
 
-
+      // 3) legacy: users/<phone>
       final legacy = await _fs
           .collection('users')
           .doc(p)
@@ -599,7 +637,7 @@ class FirebaseRiderRepository {
     return '';
   }
 
-  /// Stream: avatar เด้งสดด้วย uid
+  /// Stream: avatar เด้งสดด้วย uid (users เท่านั้น)
   Stream<String> watchUserAvatarByUid(String uid) {
     if (uid.isEmpty) return const Stream.empty();
     return _fs.collection('users').doc(uid).snapshots().map((doc) {
@@ -610,6 +648,7 @@ class FirebaseRiderRepository {
     });
   }
 
+  /// Stream: avatar เด้งสดด้วย phone (users เท่านั้น)
   Stream<String> watchUserAvatarByPhone(String phone) {
     final p = _normalizePhone(phone);
     if (p.isEmpty) return const Stream.empty();
@@ -623,6 +662,7 @@ class FirebaseRiderRepository {
     });
   }
 
+  /// หา avatar แบบครั้งเดียว (uid ก่อน, ไม่เจอค่อยลอง phone)
   Future<String> findLiveUserAvatar(
       {String? uid, String? phone, bool forceServer = false}) async {
     try {

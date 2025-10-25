@@ -218,7 +218,7 @@ class RiderLocationSender {
     }
   }
 
-  /// (ภายใน) สตรีมตำแหน่งของไรเดอร์คนหนึ่ง
+  ///สตรีมตำแหน่งของไรเดอร์คนหนึ่ง
   Stream<Map<String, dynamic>?> getShipmentLocationForRider(String riderId) {
     final doc = _fs.collection('rider_location').doc(riderId);
     return doc.snapshots().map((s) {
